@@ -1,0 +1,9 @@
+Invoice No: DEMO-2026-071
+Vendor: Demo Electronics Store
+Date: 2026-07-03
+Items:
+- USB-C Hub, Qty 1, Price INR 1799
+- HDMI Cable, Qty 1, Price INR 700
+Subtotal: INR 2499
+Tax: INR 0
+Total: INR 2499

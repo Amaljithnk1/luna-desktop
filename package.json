@@ -1,0 +1,84 @@
+{
+  "name": "luna-local-ai-desktop",
+  "version": "0.1.0",
+  "description": "Luna - a local-first AI operating layer for the desktop.",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && electron .\"",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "start": "npm run build && electron .",
+    "dist": "npm run dist:win",
+    "reset-demo": "node scripts/reset-demo.mjs",
+    "dist:win": "npm run build && electron-builder --win nsis portable --x64",
+    "dist:win-dir": "npm run build && electron-builder --win --x64 --dir",
+    "preflight": "node scripts/preflight.mjs && npm run ipc-check",
+    "ipc-check": "node scripts/ipc-check.mjs",
+    "bundle:submission": "node scripts/create-submission-bundle.mjs"
+  },
+  "build": {
+    "appId": "ai.arena.luna.prototype",
+    "productName": "Luna",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "demo-assets",
+        "to": "demo-assets"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "Luna-${version}-${arch}.${ext}",
+      "signAndEditExecutable": false,
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.18",
+    "archiver": "7.0.1",
+    "better-sqlite3": "^12.11.1",
+    "docx": "latest",
+    "framer-motion": "latest",
+    "lucide-react": "latest",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "pdfkit": "latest",
+    "pptxgenjs": "^4.0.1",
+    "react": "latest",
+    "react-dom": "latest",
+    "systeminformation": "latest",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "latest",
+    "@types/pdfkit": "latest",
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "^8.2.2",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "typescript": "latest",
+    "vite": "latest",
+    "wait-on": "latest"
+  },
+  "author": "Luna Hackathon Prototype"
+}

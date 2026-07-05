@@ -1,0 +1,3 @@
+Role: Founding Engineer - Local AI Desktop Assistant
+
+We are looking for a builder who can ship a polished desktop AI assistant. Requirements: Electron/native desktop experience, local AI model integration, privacy-first architecture, desktop automation, file processing, strong product taste, and reliable packaging. Bonus: Ollama, embeddings, PDF/DOCX/PPTX exports, model benchmarking, safe permissions, and audit logs.

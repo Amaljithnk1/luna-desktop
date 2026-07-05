@@ -1,0 +1,5 @@
+Demo Lead: We need Luna to prove privacy live, not just claim it.
+Teammate: The demo should show artifacts like PDF, DOCX, and PPTX. The demo lead will polish the deck export by Friday.
+Demo Lead: Also show reversible file automation and Trust Center export.
+Teammate: I will test the Windows installer tomorrow and prepare fallback instructions.
+Decision: Main demo will use AI Presenter, Job Mission, Artifact Studio, Automation Undo, and Trust Center.
