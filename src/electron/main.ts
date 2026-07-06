@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import fssync from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { exec } from 'node:child_process';
 import PDFDocument from 'pdfkit';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -313,6 +314,42 @@ async function chat(messages: ChatMessage[]): Promise<ChatResult> {
   await logAudit('ai', 'demo_fallback_chat', 'built-in scripted fallback', 'Used transparent fallback response path.', 'low');
   return { text, mode: 'demo-fallback', model: 'built-in scripted fallback', startedAt, finishedAt, tokensPerSecond: Number((text.split(/\s+/).length / ((finishedAt - startedAt + 50) / 1000)).toFixed(1)) };
 }
+
+let asrPipelinePromise: Promise<any> | null = null;
+let asrModelReady = false;
+function speechModelDir() { return path.join(app.getPath('userData'), 'speech-models'); }
+async function getAsrPipeline() {
+  if (!asrPipelinePromise) {
+    asrPipelinePromise = (async () => {
+      const alreadyDownloaded = fssync.existsSync(speechModelDir()) && fssync.readdirSync(speechModelDir()).length > 0;
+      const { pipeline, env } = await import('@huggingface/transformers');
+      env.cacheDir = speechModelDir();
+      env.allowRemoteModels = true;
+      if (!alreadyDownloaded) {
+        networkLog.externalRequests++;
+        networkLog.recentHosts = ['huggingface.co', ...networkLog.recentHosts.filter(h => h !== 'huggingface.co')].slice(0, 8);
+        await logAudit('network', 'speech_model_download', 'huggingface.co (Xenova/whisper-tiny.en)', 'One-time download of open Whisper weights so speech-to-text can run fully on-device afterward. This is the only network request the voice feature ever makes.', 'low');
+      }
+      const p = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en');
+      asrModelReady = true;
+      return p;
+    })();
+  }
+  return asrPipelinePromise;
+}
+async function voiceModelStatus() {
+  return { ready: asrModelReady, cacheDir: speechModelDir(), downloaded: fssync.existsSync(speechModelDir()) };
+}
+async function transcribeAudio(samples: Float32Array | number[]): Promise<{ text: string }> {
+  const startedAt = Date.now();
+  const asr = await getAsrPipeline();
+  const floatSamples = samples instanceof Float32Array ? samples : Float32Array.from(samples);
+  const result: any = await asr(floatSamples);
+  const text = (Array.isArray(result) ? result[0]?.text : result?.text) || '';
+  await logAudit('ai', 'local_whisper_transcribe', 'Xenova/whisper-tiny.en', `Transcribed ${(floatSamples.length / 16000).toFixed(1)}s of local audio in ${Date.now() - startedAt}ms. No network request was made.`, 'low');
+  return { text: text.trim() };
+}
+
 
 async function generatePdf(file: string, title: string, sections: { heading: string; body: string }[]) {
   await ensureDir(path.dirname(file));
@@ -1221,7 +1258,55 @@ async function runMissionTemplate(missionId: string): Promise<MissionResult> {
   return { summary: `${skill.name} Mission completed locally.`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
 }
 
+const KNOWN_APPS: Record<string, string> = {
+  'calculator': 'calc',
+  'calc': 'calc',
+  'notepad': 'notepad',
+  'file explorer': 'explorer',
+  'explorer': 'explorer',
+  'files': 'explorer',
+  'paint': 'mspaint',
+  'command prompt': 'cmd',
+  'terminal': 'cmd',
+  'cmd': 'cmd',
+  'settings': 'ms-settings:',
+  'control panel': 'control',
+  'task manager': 'taskmgr',
+  'browser': 'msedge',
+  'chrome': 'chrome',
+  'edge': 'msedge',
+  'spotify': 'spotify:',
+  'word': 'winword',
+  'excel': 'excel',
+  'powerpoint': 'powerpnt'
+};
+function launchApplication(target: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') { resolve({ ok: false, error: 'App launching is currently implemented for Windows only.' }); return; }
+    const cmd = `start "" ${target}`;
+    exec(cmd, { windowsHide: true }, (err) => {
+      if (err) resolve({ ok: false, error: err.message });
+      else resolve({ ok: true });
+    });
+  });
+}
+async function tryLaunchApp(command: string): Promise<CommandRouteResult | null> {
+  const c = command.toLowerCase();
+  if (!/\b(open|launch|start|run)\b/.test(c)) return null;
+  const matchKey = Object.keys(KNOWN_APPS).sort((a, b) => b.length - a.length).find(name => c.includes(name));
+  if (!matchKey) return null;
+  const target = KNOWN_APPS[matchKey];
+  const result = await launchApplication(target);
+  if (result.ok) {
+    await logAudit('automation', 'app_launch', matchKey, `Launched local application "${matchKey}" via OS command. No confirmation was required because launching a local app is reversible (closing it undoes it) and never leaves the machine.`, 'low');
+    return { intent: 'app_launch', confidence: 0.9, summary: `Opened ${matchKey} on your desktop.`, actionTaken: `Launched local application: ${matchKey}` };
+  }
+  await logAudit('automation', 'app_launch_failed', matchKey, result.error || 'Unknown error', 'low');
+  return { intent: 'app_launch', confidence: 0.9, summary: `I tried to open ${matchKey} but it failed: ${result.error}. It may not be installed, or may need a different launch command on this system.`, actionTaken: `Attempted to launch: ${matchKey}` };
+}
 async function routeCommand(command: string): Promise<CommandRouteResult> {
+  const appLaunch = await tryLaunchApp(command);
+  if (appLaunch) return appLaunch;
   const c = command.toLowerCase();
   if (/codebase|repository|repo|architecture|explain code/.test(c)) {
     const r = await runMissionTemplate('codebase');
@@ -1412,11 +1497,16 @@ async function createOrbWindow() {
 
 
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
   await ensureInitialData();
   installNetworkMonitor();
   ipcMain.handle('health:check', health);
   ipcMain.handle('demo:reset', resetDemo);
   ipcMain.handle('ai:chat', (_e, messages) => chat(messages));
+  ipcMain.handle('voice:transcribe', (_e, samples: number[]) => transcribeAudio(samples));
+  ipcMain.handle('voice:status', voiceModelStatus);
   ipcMain.handle('mission:job-application', runJobMission);
   ipcMain.handle('mission:template-run', (_e, missionId: string) => runMissionTemplate(missionId));
   ipcMain.handle('studio:research-presentation', runResearchMission);

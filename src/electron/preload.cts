@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('luna', {
   health: () => ipcRenderer.invoke('health:check'),
   resetDemo: () => ipcRenderer.invoke('demo:reset'),
   chat: (messages: unknown[]) => ipcRenderer.invoke('ai:chat', messages),
+  transcribeAudio: (samples: Float32Array | number[]) => ipcRenderer.invoke('voice:transcribe', Array.from(samples)),
+  voiceStatus: () => ipcRenderer.invoke('voice:status'),
   runJobMission: () => ipcRenderer.invoke('mission:job-application'),
   planCleanup: () => ipcRenderer.invoke('automation:plan-cleanup'),
   executeCleanup: (plan: unknown) => ipcRenderer.invoke('automation:execute-cleanup', plan),

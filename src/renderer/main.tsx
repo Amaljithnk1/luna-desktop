@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Activity, Archive, Bot, CheckCircle2, FileText, Gauge, Network, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Wand2, WifiOff } from 'lucide-react';
 import './styles.css';
 
-type Tab = 'showcase' | 'capabilities' | 'command' | 'voice' | 'attachments' | 'missionhub' | 'mission' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'model' | 'trust' | 'settings' | 'help' | 'skills';
+type Tab = 'showcase' | 'capabilities' | 'command' | 'voice' | 'attachments' | 'missionhub' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'trust' | 'settings' | 'help' | 'skills';
 type Msg = { role: 'user' | 'assistant'; content: string; meta?: string };
 
 function Badge({ children, tone='neutral' }: { children: React.ReactNode; tone?: 'neutral'|'good'|'warn'|'bad'|'purple' }) {
@@ -23,16 +23,28 @@ function pickLunaVoice(): SpeechSynthesisVoice | null {
   const femaleHint = pool.find(v => /female|woman|girl/i.test(v.name));
   return femaleHint || pool[0] || null;
 }
-function speakAsLuna(text: string, enabled = true) {
-  if (!enabled || !('speechSynthesis' in window)) return;
+function speakAsLuna(text: string, enabled = true): Promise<void> {
+  if (!enabled || !('speechSynthesis' in window)) return Promise.resolve();
   window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text.slice(0, 420));
-  const voice = pickLunaVoice();
-  if (voice) { utter.voice = voice; utter.lang = voice.lang; }
-  else utter.lang = 'en-US';
-  utter.rate = 1.02;
-  utter.pitch = 1.08;
-  window.speechSynthesis.speak(utter);
+  const clean = text
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\*\*([^*]*)\*\*/g, '$1')
+    .replace(/\*([^*]*)\*/g, '$1')
+    .replace(/^#+\s*/gm, '')
+    .replace(/[_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return new Promise((resolve) => {
+    const utter = new SpeechSynthesisUtterance(clean.slice(0, 420));
+    const voice = pickLunaVoice();
+    if (voice) { utter.voice = voice; utter.lang = voice.lang; }
+    else utter.lang = 'en-US';
+    utter.rate = 1.02;
+    utter.pitch = 1.08;
+    utter.onend = () => resolve();
+    utter.onerror = () => resolve();
+    window.speechSynthesis.speak(utter);
+  });
 }
 
 
@@ -55,7 +67,7 @@ function Header({ health, onReset, settings }: any) {
 }
 
 
-function JudgeShowcase({ pushLog }: { pushLog: (s: string)=>void }) {
+function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<any[]>([
     { id: 'health', title: 'Privacy and system proof', status: 'ready', detail: 'Check local model, resource meter and external request counter.' },
@@ -125,17 +137,9 @@ function JudgeShowcase({ pushLog }: { pushLog: (s: string)=>void }) {
     setSteps(prev => prev.map(s => ({ ...s, status: 'ready', detail: s.id === 'health' ? 'Check local model, resource meter and external request counter.' : s.detail.replace(/^Created .*|^Answered .*|^Moved .*|^Generated\/saved .*|^Selected .*/, 'Ready for demo.')})));
     pushLog('Showcase reset to clean demo state');
   };
-  const runAction = async (cmd = actionCommand) => {
-    if (!cmd.trim()) return;
-    setActionBusy(true); setActionResult(null);
-    const res = await window.luna.routeCommand(cmd);
-    setActionResult(res); setActionBusy(false);
-    pushLog(`Action routed: ${res.intent}`);
-  };
-  const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', 'Organize my demo Downloads safely', 'Ask the vault what Luna proves about privacy', 'Create an invoice extractor skill', 'What am I doing right now?', 'Benchmark my local AI models'];
   return <div className="grid two">
-    <Card title="5-Minute Judge Showcase" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">One click runs Luna’s strongest proof path: privacy proof, local missions, artifact generation, evidence Q&A, reversible automation, skill creation and adaptive memory.</p>
+    <Card title="5-Minute Guided Demo" icon={<Sparkles size={18}/>}> 
+      <p className="bigcopy">One click runs {assistantName}’s strongest proof path: privacy proof, local missions, artifact generation, evidence Q&A, reversible automation, skill creation and adaptive memory.</p>
       <div className="row-actions"><button className="primary" onClick={run} disabled={running}>{running ? 'Running showcase…' : 'Run full showcase'}</button><button onClick={resetSteps} disabled={running}>Reset showcase</button></div>
       {proof && <div className="proof-cards"><div><b>{proof.network.externalRequests}</b><span>external requests</span></div><div><b>{proof.ollama.ok ? 'Ollama' : 'Fallback'}</b><span>AI mode</span></div><div><b>{proof.resources.cpuLoad}%</b><span>CPU</span></div><div><b>{proof.resources.memoryUsedGb}GB</b><span>RAM used</span></div></div>}
     </Card>
@@ -150,10 +154,10 @@ function JudgeShowcase({ pushLog }: { pushLog: (s: string)=>void }) {
 }
 
 
-function CapabilityCenter({ setTab }: { setTab: (t: Tab)=>void }) {
+function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assistantName: string }) {
   const groups = [
     { title: 'Local AI Core', tab: 'command' as Tab, items: ['Ollama chat', 'transparent fallback mode', 'Chat+ adaptive context', 'model preference', 'response style control', 'conversation compression foundation'] },
-    { title: 'Desktop Companion Layer', tab: 'command' as Tab, items: ['always-on-top Luna Orb', 'global command palette', 'Ctrl/Cmd + Shift + L shortcut', 'natural-language command router', 'voice/transcript commands', 'AI Demo Presenter'] },
+    { title: 'Desktop Companion Layer', tab: 'command' as Tab, items: [`always-on-top ${assistantName} Orb`, 'global command palette', 'Ctrl/Cmd + Shift + L shortcut', 'natural-language command router', 'voice/transcript commands'] },
     { title: 'Knowledge & Memory', tab: 'vault' as Tab, items: ['Knowledge Vault', 'PDF/DOCX/TXT/MD/CSV/JSON import', 'embedding retrieval when available', 'keyword fallback', 'evidence cards', 'reviewable personal memory', 'adaptive context builder'] },
     { title: 'Artifacts & Attachments', tab: 'attachments' as Tab, items: ['unified attachments', 'local OCR for images', 'PDF export', 'DOCX export', 'PPTX export', 'HTML export', 'Markdown export', 'CSV/JSON/ICS/ZIP export'] },
     { title: 'Missions', tab: 'missionhub' as Tab, items: ['Job Application Mission', 'Research-to-Presentation', 'Meeting Notes', 'Invoice / Expense', 'Study Pack', 'Codebase Explainer', 'Attachment Summary'] },
@@ -163,13 +167,13 @@ function CapabilityCenter({ setTab }: { setTab: (t: Tab)=>void }) {
   ];
   return <div className="grid two">
     <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">A single view of what Luna can do. This is useful during judging if someone wants to quickly understand the product surface area.</p>
+      <p className="bigcopy">A single view of what {assistantName} can do. This is useful during judging if someone wants to quickly understand the product surface area.</p>
       <div className="capability-score"><div><b>8</b><span>product pillars</span></div><div><b>50+</b><span>visible capabilities</span></div><div><b>0</b><span>paid APIs required</span></div></div>
-      <p className="hint">Each section links to the relevant working Luna area.</p>
+      <p className="hint">Each section links to the relevant working {assistantName} area.</p>
     </Card>
     <Card title="Positioning" icon={<ShieldCheck size={18}/>}> 
       <h3>Private local AI operating layer</h3>
-      <p className="bigcopy">Luna combines conversation, local context, artifact generation, safe automation, memory, reusable skills, and privacy forensics into one desktop companion.</p>
+      <p className="bigcopy">{assistantName} combines conversation, local context, artifact generation, safe automation, memory, reusable skills, and privacy forensics into one desktop companion.</p>
       <div className="showcase-list"><div><b>Observe</b><span>Attachments, Lens, Vault and desktop context.</span></div><div><b>Act</b><span>Missions, artifacts, file automation and skills.</span></div><div><b>Explain</b><span>Trace, replay, evidence and audit logs.</span></div><div><b>Control</b><span>Settings, memory toggle, reset, export and undo.</span></div></div>
     </Card>
     {groups.map(g => <Card key={g.title} title={g.title} icon={<CheckCircle2 size={18}/>}>
@@ -179,9 +183,9 @@ function CapabilityCenter({ setTab }: { setTab: (t: Tab)=>void }) {
   </div>;
 }
 
-function CommandCenter({ pushLog }: { pushLog: (s: string)=>void }) {
-  const [messages, setMessages] = useState<Msg[]>([{ role: 'assistant', content: 'Hi, I’m Luna. I can run with local Ollama or fallback demo mode, analyze local documents, generate artifacts, and organize files with undo.' }]);
-  const [input, setInput] = useState('What can Luna do while staying local?');
+function CommandCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
+  const [messages, setMessages] = useState<Msg[]>([{ role: 'assistant', content: `Hi, I’m ${assistantName}. I can run with local Ollama or fallback demo mode, analyze local documents, generate artifacts, and organize files with undo.` }]);
+  const [input, setInput] = useState(`What can ${assistantName} do while staying local?`);
   const [busy, setBusy] = useState(false);
   const [actionCommand, setActionCommand] = useState('Create a presentation from my local research notes');
   const [actionBusy, setActionBusy] = useState(false);
@@ -197,7 +201,7 @@ function CommandCenter({ pushLog }: { pushLog: (s: string)=>void }) {
     setBusy(false); pushLog(`Chat response via ${res.mode}`);
   };
   return <div className="grid two">
-    <Card title="Ask Luna" icon={<Bot size={18}/>}> 
+    <Card title={`Ask ${assistantName}`} icon={<Bot size={18}/>}> 
       <div className="chatbox">
         {messages.map((m, i) => <div key={i} className={`msg ${m.role}`}><div>{m.content}</div>{m.meta && <small>{m.meta}</small>}</div>)}
         {busy && <div className="msg assistant typing">Thinking locally…</div>}
@@ -218,60 +222,109 @@ function CommandCenter({ pushLog }: { pushLog: (s: string)=>void }) {
 
 
 
-function VoiceMode({ pushLog }: { pushLog: (s: string)=>void }) {
+function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [supported, setSupported] = useState(false);
-  const [listening, setListening] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [modelStatus, setModelStatus] = useState<{ ready: boolean; downloaded: boolean } | null>(null);
+  const [micError, setMicError] = useState('');
   const [transcript, setTranscript] = useState('Prepare my job application package');
   const [result, setResult] = useState<any>(null);
   const [speakBack, setSpeakBack] = useState(true);
-  const recognitionRef = React.useRef<any>(null);
+  const [speaking, setSpeaking] = useState(false);
+  const [routing, setRouting] = useState(false);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const streamRef = React.useRef<MediaStream | null>(null);
+  const chunksRef = React.useRef<Blob[]>([]);
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    setSupported(!!SR);
-    if (SR) {
-      const rec = new SR();
-      rec.lang = 'en-US'; rec.continuous = false; rec.interimResults = true;
-      rec.onresult = (event: any) => {
-        let text = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) text += event.results[i][0].transcript;
-        setTranscript(text.trim());
-      };
-      rec.onend = () => setListening(false);
-      rec.onerror = () => setListening(false);
-      recognitionRef.current = rec;
-    }
+    setSupported(!!navigator.mediaDevices?.getUserMedia);
+    window.luna.voiceStatus().then(setModelStatus).catch(() => {});
   }, []);
   const speak = (text: string) => speakAsLuna(text, speakBack);
-  const start = () => {
-    if (!recognitionRef.current) return;
-    setResult(null); setListening(true); setTranscript('');
-    try { recognitionRef.current.start(); } catch { setListening(false); }
+  useEffect(() => () => {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    streamRef.current?.getTracks().forEach(t => t.stop());
+  }, []);
+  const resampleTo16kMono = async (blob: Blob): Promise<Float32Array> => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const decodeCtx = new AudioContext();
+    const decoded = await decodeCtx.decodeAudioData(arrayBuffer);
+    decodeCtx.close();
+    const targetLength = Math.ceil(decoded.duration * 16000);
+    const offline = new OfflineAudioContext(1, targetLength, 16000);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start();
+    const rendered = await offline.startRendering();
+    return rendered.getChannelData(0);
   };
-  const stop = () => { try { recognitionRef.current?.stop(); } catch {} setListening(false); };
+  const start = async () => {
+    setMicError(''); setResult(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setRecording(false);
+        setTranscribing(true);
+        try {
+          const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+          const samples = await resampleTo16kMono(blob);
+          const { text } = await window.luna.transcribeAudio(samples);
+          setTranscript(text || '');
+          setModelStatus(await window.luna.voiceStatus());
+          if (text && text.trim()) { await run(text); } else { setMicError('Didn\u2019t catch that — try again or edit the transcript below.'); }
+        } catch (e: any) {
+          setMicError(`Transcription failed: ${e?.message || String(e)}`);
+        }
+        setTranscribing(false);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch (e: any) {
+      setMicError(`Microphone access failed: ${e?.message || String(e)}`);
+      setRecording(false);
+    }
+  };
+  const stop = () => { try { mediaRecorderRef.current?.stop(); } catch {} };
   const run = async (cmd = transcript) => {
     if (!cmd.trim()) return;
+    setRouting(true);
     const res = await window.luna.routeCommand(cmd);
     setResult(res); pushLog(`Voice routed: ${res.intent}`);
-    speak(`${res.actionTaken}. ${res.summary}`);
+    setRouting(false);
+    setSpeaking(true);
+    await speak(res.summary);
+    setSpeaking(false);
   };
-  const examples = ['Prepare my job application package', 'Create a presentation from my local research notes', 'Ask the vault what Luna proves about privacy', 'Create an invoice extractor skill', 'Benchmark my local AI models'];
+  const examples = ['Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Create an invoice extractor skill', 'Benchmark my local AI models'];
+  const statusLabel = recording ? 'Listening…' : transcribing ? (modelStatus?.ready ? 'Transcribing locally…' : 'Downloading local speech model (one-time, ~75MB)…') : routing ? 'Thinking…' : speaking ? 'Speaking…' : 'Ready';
+  const orbState = recording ? 'listening' : (transcribing || routing) ? 'thinking' : speaking ? 'speaking' : '';
   return <div className="grid two">
     <Card title="Luna Voice" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">Push-to-talk voice commands route into the same local Command Router. If speech recognition is unavailable, transcript mode still works.</p><p className="hint">Luna prefers a feminine system voice when available, with safe fallback to the default system voice.</p>
-      <div className="voice-orb"><div className={listening ? 'voice-core listening' : 'voice-core'}><Sparkles size={42}/></div><span>{listening ? 'Listening…' : 'Ready'}</span></div>
-      <div className="row-actions"><button className="primary" onClick={start} disabled={!supported || listening}>Push to talk</button><button onClick={stop} disabled={!listening}>Stop</button><button onClick={()=>run()} disabled={!transcript.trim()}>Run transcript</button><label className="toggle"><input type="checkbox" checked={speakBack} onChange={e=>setSpeakBack(e.target.checked)}/> Speak response</label></div>
-      {!supported && <p className="hint">SpeechRecognition is not available in this runtime. Use transcript mode below; the demo still works.</p>}
+      <p className="bigcopy">Push-to-talk records locally and transcribes fully on-device with an open Whisper model — audio never leaves this machine.</p><p className="hint">{assistantName} prefers a feminine system voice when available, with safe fallback to the default system voice.</p>
+      <div className="voice-orb"><div className={`voice-core ${orbState}`}><Sparkles size={42}/></div><span>{statusLabel}</span></div>
+      <div className="row-actions"><button className="primary" onClick={start} disabled={!supported || recording || transcribing}>Push to talk</button><button onClick={stop} disabled={!recording}>Stop</button><button onClick={()=>run()} disabled={!transcript.trim() || routing || speaking}>Submit typed text</button><label className="toggle"><input type="checkbox" checked={speakBack} onChange={e=>setSpeakBack(e.target.checked)}/> Speak response</label></div>
+      <p className="hint">Speaking already submits automatically. Use "Submit typed text" only if you type or edit the box below instead of using your voice.</p>
+      {!supported && <p className="hint">Microphone access is not available in this runtime. Use transcript mode below; the demo still works.</p>}
+      {micError && <p className="hint">{micError}</p>}
+      {!modelStatus?.downloaded && <p className="hint">First use downloads a small open speech model (~75MB) once; every use after that is fully offline.</p>}
       <textarea value={transcript} onChange={e=>setTranscript(e.target.value)} placeholder="Voice transcript appears here…" />
       <div className="suggestion-list">{examples.map(x=><button key={x} onClick={()=>{setTranscript(x); run(x);}}>{x}</button>)}</div>
     </Card>
     <Card title="Voice Action Result" icon={<Activity size={18}/>}> 
-      {!result && <p className="hint">Say or type a command, then Luna routes it to missions, skills, vault, Lens, automation or model inspector.</p>}
+      {!result && <p className="hint">Say or type a command, then {assistantName} routes it to missions, skills, vault, Lens, automation or model inspector.</p>}
       {result && <div className="action-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">confidence {Math.round(result.confidence*100)}%</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
     </Card>
   </div>;
 }
 
-function AttachmentsCenter({ pushLog }: { pushLog: (s: string)=>void }) {
+function AttachmentsCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [state, setState] = useState<any>({ items: [] });
   const [result, setResult] = useState<any>(null);
   const [busy, setBusy] = useState('');
@@ -283,7 +336,7 @@ function AttachmentsCenter({ pushLog }: { pushLog: (s: string)=>void }) {
   const summarize = async () => { setBusy('Summarizing attachments locally…'); const r = await window.luna.attachmentsSummarize(); setResult(r); setBusy(''); pushLog('Attachment summary generated'); };
   return <div className="grid two">
     <Card title="Unified Attachments" icon={<FileText size={18}/>}> 
-      <p className="bigcopy">Import files once, then use them across Luna: summarize, add to Knowledge Vault, route through commands, or feed future missions and skills.</p>
+      <p className="bigcopy">Import files once, then use them across {assistantName}: summarize, add to Knowledge Vault, route through commands, or feed future missions and skills.</p>
       <div className="row-actions"><button className="primary" onClick={importFiles} disabled={!!busy}>Import files</button><button onClick={summarize} disabled={!!busy || !state.items?.length}>Summarize attachments</button><button onClick={toVault} disabled={!!busy || !state.items?.length}>Add to Vault</button><button className="danger" onClick={clear} disabled={!!busy}>Clear</button></div>
       {busy && <p className="hint">{busy}</p>}
       <div className="vault-stats"><div><b>{state.items?.length || 0}</b><span>files</span></div><div><b>{state.items?.reduce((n:number,i:any)=>n+i.chars,0) || 0}</b><span>chars</span></div><div><b>{state.updatedAt ? new Date(state.updatedAt).toLocaleTimeString() : '-'}</b><span>updated</span></div></div>
@@ -302,16 +355,17 @@ function AttachmentsCenter({ pushLog }: { pushLog: (s: string)=>void }) {
 }
 
 
-function MissionHub({ pushLog }: { pushLog: (s: string)=>void }) {
+function MissionHub({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [running, setRunning] = useState('');
   const [result, setResult] = useState<any>(null);
   const missions = [
+    { id: 'job-application', title: 'Job Application Mission', desc: `Seeded local docs: resume, job description and portfolio notes. ${assistantName} analyzes fit, generates artifacts, and logs privacy trace.`, outputs: 'PDF + DOCX + ZIP' },
     { id: 'meeting', title: 'Meeting Notes Mission', desc: 'Transcript → summary, decisions, action items, follow-up email and ICS reminder.', outputs: 'MD + ICS' },
     { id: 'invoice', title: 'Invoice / Expense Mission', desc: 'Invoice → structured JSON, CSV line items and local PDF report.', outputs: 'JSON + CSV + PDF' },
     { id: 'study', title: 'Study Pack Mission', desc: 'Research note → summary, flashcards, quiz questions and study PDF.', outputs: 'MD + CSV + PDF' },
     { id: 'codebase', title: 'Codebase Explainer Mission', desc: 'Local project → static dependency graph, architecture report and ZIP package.', outputs: 'MD + JSON + PDF + ZIP' }
   ];
-  const run = async (id: string) => { setRunning(id); setResult(null); const r = await window.luna.runMissionTemplate(id); setResult({ id, ...r }); setRunning(''); pushLog(`Mission Hub completed: ${id}`); };
+  const run = async (id: string) => { setRunning(id); setResult(null); const r = id === 'job-application' ? await window.luna.runJobMission() : await window.luna.runMissionTemplate(id); setResult({ id, ...r }); setRunning(''); pushLog(`Mission Hub completed: ${id}`); };
   return <div className="grid two">
     <Card title="Mission Hub" icon={<Wand2 size={18}/>}> 
       <p className="bigcopy">Full mission flows for common competitor-style features. Each mission produces real local artifacts, trace and privacy events.</p>
@@ -326,29 +380,6 @@ function MissionHub({ pushLog }: { pushLog: (s: string)=>void }) {
     </Card>}
   </div>;
 }
-
-function JobMission({ pushLog }: { pushLog: (s: string)=>void }) {
-  const [result, setResult] = useState<any>(null); const [busy, setBusy] = useState(false);
-  const run = async () => { setBusy(true); const r = await window.luna.runJobMission(); setResult(r); setBusy(false); pushLog('Job Application Mission completed'); };
-  return <div className="grid two mission-grid">
-    <Card title="Job Application Mission" icon={<Wand2 size={18}/>}> 
-      <p className="bigcopy">Seeded local docs: resume, job description and portfolio notes. Luna analyzes fit, generates artifacts, and logs privacy trace.</p>
-      <button className="primary" onClick={run} disabled={busy}>{busy ? 'Running mission…' : 'Run mission'}</button>
-      {result && <div className="artifact-list">
-        {result.artifacts.map((a: any) => <div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}
-      </div>}
-    </Card>
-    <Card title="Mission replay" icon={<Activity size={18}/>}> 
-      {!result && <p className="hint">Run the mission to see an audit-style replay.</p>}
-      {result?.trace?.map((t: any, i: number) => <div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}
-    </Card>
-    {result && <Card title="Privacy trace" icon={<ShieldCheck size={18}/>} className="wide"> 
-      {result.privacy.map((p: any, i: number) => <div className="privacy-row" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}
-    </Card>}
-  </div>;
-}
-
-
 
 function ArtifactStudio({ pushLog }: { pushLog: (s: string)=>void }) {
   const [result, setResult] = useState<any>(null);
@@ -378,7 +409,7 @@ function ArtifactStudio({ pushLog }: { pushLog: (s: string)=>void }) {
 }
 
 
-function LunaLens({ pushLog }: { pushLog: (s: string)=>void }) {
+function LunaLens({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [snapshot, setSnapshot] = useState<any>(null);
   const [busy, setBusy] = useState('');
   const capture = async () => { setBusy('Capturing desktop context…'); const s = await window.luna.lensContext(); setSnapshot(s); setBusy(''); pushLog('Luna Lens captured desktop context'); };
@@ -386,7 +417,7 @@ function LunaLens({ pushLog }: { pushLog: (s: string)=>void }) {
   const explain = async () => { if (!snapshot) return; setBusy('Explaining local context…'); const s = await window.luna.lensExplain(snapshot); setSnapshot(s); setBusy(''); pushLog('Luna Lens generated context explanation'); };
   return <div className="grid two">
     <Card title="Luna Lens" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">Permission-bounded desktop understanding. Capture app/window context, import a screenshot manually, run OCR, then ask Luna what you are looking at.</p>
+      <p className="bigcopy">Permission-bounded desktop understanding. Capture app/window context, import a screenshot manually, run OCR, then ask {assistantName} what you are looking at.</p>
       <div className="row-actions"><button className="primary" onClick={capture} disabled={!!busy}>Capture desktop context</button><button onClick={importImage} disabled={!!busy}>Import screenshot/image</button><button onClick={explain} disabled={!snapshot || !!busy}>Explain this</button></div>
       {busy && <p className="hint">{busy}</p>}
       {snapshot && <div className="lens-snapshot">
@@ -399,7 +430,7 @@ function LunaLens({ pushLog }: { pushLog: (s: string)=>void }) {
     </Card>
     <Card title="Detected Context" icon={<Activity size={18}/>}> 
       {!snapshot && <p className="hint">Capture context or import a screenshot to begin.</p>}
-      {snapshot && <><h4>Running apps</h4><div className="app-chip-list">{snapshot.runningApps?.map((app:string)=><Badge key={app}>{app}</Badge>)}</div>{snapshot.ocrText && <><h4>OCR / Selected Text</h4><pre className="ocr-box">{snapshot.ocrText.slice(0, 2200)}</pre></>}{snapshot.summary && <><h4>Luna Explanation</h4><div className="answer-box"><p>{snapshot.summary}</p></div></>}</>}
+      {snapshot && <><h4>Running apps</h4><div className="app-chip-list">{snapshot.runningApps?.map((app:string)=><Badge key={app}>{app}</Badge>)}</div>{snapshot.ocrText && <><h4>OCR / Selected Text</h4><pre className="ocr-box">{snapshot.ocrText.slice(0, 2200)}</pre></>}{snapshot.summary && <><h4>{assistantName} Explanation</h4><div className="answer-box"><p>{snapshot.summary}</p></div></>}</>}
     </Card>
     {snapshot && <Card title="Lens Privacy Trace" icon={<ShieldCheck size={18}/>} className="wide"> 
       {snapshot.privacy.map((p:any,i:number)=><div className="privacy-row" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}
@@ -407,9 +438,9 @@ function LunaLens({ pushLog }: { pushLog: (s: string)=>void }) {
   </div>;
 }
 
-function KnowledgeVault({ pushLog }: { pushLog: (s: string)=>void }) {
+function KnowledgeVault({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [state, setState] = useState<any>({ docs: [], chunks: [] });
-  const [query, setQuery] = useState('What does Luna prove about privacy?');
+  const [query, setQuery] = useState(`What does ${assistantName} prove about privacy?`);
   const [results, setResults] = useState<any[]>([]);
   const [answer, setAnswer] = useState<any>(null);
   const [busy, setBusy] = useState('');
@@ -421,7 +452,7 @@ function KnowledgeVault({ pushLog }: { pushLog: (s: string)=>void }) {
   const ask = async () => { setBusy('Answering with local vault evidence…'); const r = await window.luna.vaultAsk(query); setAnswer(r); setResults(r.results); setBusy(''); pushLog('Vault answer generated'); };
   return <div className="grid two">
     <Card title="Knowledge Vault" icon={<FileText size={18}/>}> 
-      <p className="bigcopy">Index local documents, search across them, and ask questions with evidence. This is Luna’s local RAG layer: Ollama embeddings when available, keyword fallback when not.</p>
+      <p className="bigcopy">Index local documents, search across them, and ask questions with evidence. This is {assistantName}’s local RAG layer: Ollama embeddings when available, keyword fallback when not.</p>
       <div className="row-actions"><button className="primary" onClick={indexDemo} disabled={!!busy}>Index demo docs</button><button onClick={importFiles} disabled={!!busy}>Import files</button></div>
       {busy && <p className="hint">{busy}</p>}
       <div className="vault-stats"><div><b>{state.docs?.length || 0}</b><span>documents</span></div><div><b>{state.chunks?.length || 0}</b><span>chunks</span></div><div><b>{state.updatedAt ? new Date(state.updatedAt).toLocaleTimeString() : '-'}</b><span>updated</span></div></div>
@@ -440,11 +471,11 @@ function KnowledgeVault({ pushLog }: { pushLog: (s: string)=>void }) {
 }
 
 
-function MemoryCenter({ pushLog }: { pushLog: (s: string)=>void }) {
+function MemoryCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [state, setState] = useState<any>({ items: [] });
-  const [text, setText] = useState('User prefers Luna to avoid assumptions and cover competitor surprise features through native support or skill creation.');
+  const [text, setText] = useState(`User prefers ${assistantName} to avoid assumptions and cover competitor surprise features through native support or skill creation.`);
   const [type, setType] = useState('preference');
-  const [query, setQuery] = useState('What does the user want Luna to be?');
+  const [query, setQuery] = useState(`What does the user want ${assistantName} to be?`);
   const [results, setResults] = useState<any[]>([]);
   const [context, setContext] = useState<any>(null);
   const refresh = async () => setState(await window.luna.memoryList());
@@ -456,7 +487,7 @@ function MemoryCenter({ pushLog }: { pushLog: (s: string)=>void }) {
   const build = async () => { const c = await window.luna.contextBuild(query); setContext(c); setResults(c.memories); pushLog('Adaptive context built'); };
   return <div className="grid two">
     <Card title="Personal Memory" icon={<Bot size={18}/>}> 
-      <p className="bigcopy">Luna stores reviewable local memories and retrieves only relevant ones into the prompt using embeddings when available and keyword fallback when not.</p>
+      <p className="bigcopy">{assistantName} stores reviewable local memories and retrieves only relevant ones into the prompt using embeddings when available and keyword fallback when not.</p>
       <textarea value={text} onChange={e=>setText(e.target.value)} />
       <div className="row-actions"><select value={type} onChange={e=>setType(e.target.value)}><option>preference</option><option>goal</option><option>project</option><option>fact</option><option>workflow</option><option>conversation</option></select><button className="primary" onClick={add}>Remember this</button><button onClick={seed}>Reset seed memory</button></div>
       <div className="memory-list">{state.items?.map((m:any)=><div key={m.id}><Badge tone="purple">{m.type}</Badge><p>{m.text}</p><small>{m.source} · {new Date(m.createdAt).toLocaleString()}</small><button className="tiny" onClick={()=>del(m.id)}>Delete</button></div>)}</div>
@@ -470,7 +501,7 @@ function MemoryCenter({ pushLog }: { pushLog: (s: string)=>void }) {
   </div>;
 }
 
-function Automation({ pushLog }: { pushLog: (s: string)=>void }) {
+function Automation({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [plan, setPlan] = useState<any>(null); const [done, setDone] = useState<any>(null); const [undo, setUndo] = useState<any>(null);
   const makePlan = async () => { setDone(null); setUndo(null); setPlan(await window.luna.planCleanup()); pushLog('Cleanup plan generated'); };
   const execute = async () => { const r = await window.luna.executeCleanup(plan); setDone(r); pushLog('Cleanup executed with manifest'); };
@@ -481,7 +512,7 @@ function Automation({ pushLog }: { pushLog: (s: string)=>void }) {
       {plan && <><div className="risk"><Badge tone="good">Risk: {plan.risk}</Badge><Badge tone="purple">Undo manifest will be created</Badge></div><div className="moves">{plan.moves.map((m:any,i:number)=><div key={i}><b>{m.from.split(/[\\/]/).pop()}</b><span>→ {m.to.split(/[\\/]/).slice(-2).join('/')}</span><small>{m.reason}</small></div>)}</div><button onClick={execute} disabled={!!done}>Approve and run</button></>}
     </Card>
     <Card title="Undo proof" icon={<RotateCcw size={18}/>}> 
-      {!done && <p className="hint">After execution, Luna can revert the entire mission in one click.</p>}
+      {!done && <p className="hint">After execution, {assistantName} can revert the entire mission in one click.</p>}
       {done && <div className="success"><CheckCircle2/> Moved {done.moved} files. Manifest saved.<button onClick={()=>window.luna.revealPath(done.manifestPath)}>Reveal manifest</button><button className="danger" onClick={undoIt} disabled={!!undo}>Undo entire mission</button></div>}
       {undo && <div className="success"><RotateCcw/> Restored {undo.restored} files to original paths.</div>}
     </Card>
@@ -489,46 +520,20 @@ function Automation({ pushLog }: { pushLog: (s: string)=>void }) {
 }
 
 
-function ModelInspector({ pushLog }: { pushLog: (s: string)=>void }) {
-  const [recommendation, setRecommendation] = useState<any>(null);
-  const [benchmarks, setBenchmarks] = useState<any[]>([]);
-  const [drill, setDrill] = useState<any>(null);
-  const [busy, setBusy] = useState('');
-  const load = async () => { setBusy('Inspecting hardware and model availability…'); const r = await window.luna.modelRecommend(); setRecommendation(r); setBusy(''); pushLog('Model recommendation generated'); };
-  const bench = async () => { setBusy('Benchmarking local model path…'); const r = await window.luna.modelBenchmark(); setBenchmarks(r); setBusy(''); pushLog('Model benchmark completed'); };
-  const fallback = async () => { setBusy('Running fallback drill…'); const r = await window.luna.fallbackDrill(); setDrill(r); setBusy(''); pushLog('Fallback drill completed'); };
-  useEffect(() => { load(); }, []);
-  return <div className="grid two">
-    <Card title="Local AI Inspector" icon={<Gauge size={18}/>}> 
-      <p className="bigcopy">Luna explains which local model path is safest for the machine instead of blindly calling one model for every task.</p>
-      <div className="row-actions"><button onClick={load} disabled={!!busy}>Refresh recommendation</button><button className="primary" onClick={bench} disabled={!!busy}>Benchmark models</button><button onClick={fallback} disabled={!!busy}>Run fallback drill</button></div>
-      {busy && <p className="hint">{busy}</p>}
-      {recommendation && <div className="model-rec">
-        <Badge tone={recommendation.systemClass === 'high' ? 'good' : recommendation.systemClass === 'balanced' ? 'purple' : 'warn'}>{recommendation.systemClass} system</Badge>
-        <h3>{recommendation.recommended}</h3>
-        <p>{recommendation.reason}</p>
-        <div className="skill-section"><b>Installed usable models</b>{(recommendation.installedUsable.length ? recommendation.installedUsable : ['None detected']).map((m:string)=><span key={m}>{m}</span>)}</div>
-        <div className="skill-section"><b>Suggested missing models</b>{recommendation.missingSuggested.map((m:string)=><span key={m}>ollama pull {m}</span>)}</div>
-      </div>}
-    </Card>
-    <Card title="Fallback Reliability Drill" icon={<ShieldCheck size={18}/>}> 
-      {!drill && <p className="hint">This intentionally exercises the fallback path so Luna can prove it does not collapse when the primary model is unavailable.</p>}
-      {drill && <div className="answer-box"><Badge tone="good">{drill.ok ? 'fallback ok' : 'fallback failed'}</Badge><p><b>Primary:</b> {drill.primaryStatus}</p><p><b>Fallback:</b> {drill.fallbackStatus}</p><p><b>Response:</b> {drill.response.text}</p><small>{drill.response.model} · {drill.response.tokensPerSecond} tok/s</small></div>}
-    </Card>
-    <Card title="Benchmark Results" icon={<Activity size={18}/>} className="wide"> 
-      {!benchmarks.length && <p className="hint">Run benchmark to measure latency and approximate tokens/sec.</p>}
-      <div className="benchmark-grid">{benchmarks.map((b:any)=><div className={`benchmark-card ${b.ok?'':'error'}`} key={b.model}><div><b>{b.model}</b><Badge tone={b.ok?'good':'bad'}>{b.ok?'ok':'error'}</Badge></div><div className="metric"><span>Mode</span><b>{b.mode}</b></div><div className="metric"><span>Latency</span><b>{b.latencyMs}ms</b></div><div className="metric"><span>Speed</span><b>{b.tokensPerSecond ?? '-'} tok/s</b></div><p>{b.error || b.outputPreview}</p></div>)}</div>
-    </Card>
-  </div>;
-}
-
-function Trust({ health }: any) {
+function Trust({ health, assistantName }: any) {
   const [audit, setAudit] = useState<any[]>([]);
   const [dbStatus, setDbStatus] = useState<any>(null);
   const [exported, setExported] = useState<any>(null);
   const [busy, setBusy] = useState('');
+  const [recommendation, setRecommendation] = useState<any>(null);
+  const [benchmarks, setBenchmarks] = useState<any[]>([]);
+  const [drill, setDrill] = useState<any>(null);
+  const [modelBusy, setModelBusy] = useState('');
   const loadAudit = async () => { setAudit(await window.luna.auditList()); setDbStatus(await window.luna.databaseStatus()); };
-  useEffect(() => { loadAudit(); }, []);
+  const loadRecommendation = async () => { setModelBusy('Inspecting hardware and model availability…'); const r = await window.luna.modelRecommend(); setRecommendation(r); setModelBusy(''); };
+  const bench = async () => { setModelBusy('Benchmarking local model path…'); const r = await window.luna.modelBenchmark(); setBenchmarks(r); setModelBusy(''); };
+  const fallback = async () => { setModelBusy('Running fallback drill…'); const r = await window.luna.fallbackDrill(); setDrill(r); setModelBusy(''); };
+  useEffect(() => { loadAudit(); loadRecommendation(); }, []);
   const exportData = async () => { setBusy('Exporting trust package…'); const r = await window.luna.trustExport(); setExported(r); setBusy(''); await loadAudit(); };
   const resetAll = async () => { setBusy('Resetting all Luna demo data…'); await window.luna.dataResetAll(); setExported(null); setBusy(''); await loadAudit(); };
   const counts = audit.reduce((acc:any, e:any) => { acc[e.category] = (acc[e.category] || 0) + 1; return acc; }, {});
@@ -553,6 +558,25 @@ function Trust({ health }: any) {
       <div className="metric"><span>Memory</span><b>{health?.resources?.memoryUsedGb} / {health?.resources?.memoryTotalGb} GB</b></div>
       <div className="metric"><span>GPU</span><b>{health?.resources?.gpu || 'Unavailable/unknown'}</b></div>
     </Card>
+    <Card title="Local AI Recommendation" icon={<Gauge size={18}/>} className="wide"> 
+      <p className="bigcopy">{assistantName} explains which local model path is safest for the machine instead of blindly calling one model for every task.</p>
+      <div className="row-actions"><button onClick={loadRecommendation} disabled={!!modelBusy}>Refresh recommendation</button><button className="primary" onClick={bench} disabled={!!modelBusy}>Benchmark models</button><button onClick={fallback} disabled={!!modelBusy}>Run fallback drill</button></div>
+      {modelBusy && <p className="hint">{modelBusy}</p>}
+      {recommendation && <div className="model-rec">
+        <Badge tone={recommendation.systemClass === 'high' ? 'good' : recommendation.systemClass === 'balanced' ? 'purple' : 'warn'}>{recommendation.systemClass} system</Badge>
+        <h3>{recommendation.recommended}</h3>
+        <p>{recommendation.reason}</p>
+        <div className="skill-section"><b>Installed usable models</b>{(recommendation.installedUsable.length ? recommendation.installedUsable : ['None detected']).map((m:string)=><span key={m}>{m}</span>)}</div>
+        <div className="skill-section"><b>Suggested missing models</b>{recommendation.missingSuggested.map((m:string)=><span key={m}>ollama pull {m}</span>)}</div>
+      </div>}
+    </Card>
+    <Card title="Fallback Reliability Drill" icon={<ShieldCheck size={18}/>} className="wide"> 
+      {!drill && <p className="hint">This intentionally exercises the fallback path so {assistantName} can prove it does not collapse when the primary model is unavailable.</p>}
+      {drill && <div className="answer-box"><Badge tone="good">{drill.ok ? 'fallback ok' : 'fallback failed'}</Badge><p><b>Primary:</b> {drill.primaryStatus}</p><p><b>Fallback:</b> {drill.fallbackStatus}</p><p><b>Response:</b> {drill.response.text}</p><small>{drill.response.model} · {drill.response.tokensPerSecond} tok/s</small></div>}
+    </Card>
+    {benchmarks.length > 0 && <Card title="Benchmark Results" icon={<Activity size={18}/>} className="wide"> 
+      <div className="benchmark-grid">{benchmarks.map((b:any)=><div className={`benchmark-card ${b.ok?'':'error'}`} key={b.model}><div><b>{b.model}</b><Badge tone={b.ok?'good':'bad'}>{b.ok?'ok':'error'}</Badge></div><div className="metric"><span>Mode</span><b>{b.mode}</b></div><div className="metric"><span>Latency</span><b>{b.latencyMs}ms</b></div><div className="metric"><span>Speed</span><b>{b.tokensPerSecond ?? '-'} tok/s</b></div><p>{b.error || b.outputPreview}</p></div>)}</div>
+    </Card>}
     <Card title="SQLite Data Layer" icon={<Archive size={18}/>} className="wide"> 
       {!dbStatus && <p className="hint">Loading database status…</p>}
       {dbStatus && <><div className="metric"><span>Database path</span><b className="path">{dbStatus.path}</b></div><div className="metric"><span>Database size</span><b>{dbStatus.sizeBytes} bytes</b></div><div className="db-table-grid">{dbStatus.tables.map((t:any)=><div key={t.name}><b>{t.rows}</b><span>{t.name}</span></div>)}</div></>}
@@ -566,15 +590,15 @@ function Trust({ health }: any) {
 
 
 
-function HelpCenter({ setTab }: { setTab: (t: Tab)=>void }) {
+function HelpCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assistantName: string }) {
   const shortcuts = [
-    ['Ctrl/Cmd + Shift + L', 'Open Luna command palette'],
-    ['Click Luna Orb', 'Open/focus Luna and command palette'],
+    ['Ctrl/Cmd + Shift + L', `Open ${assistantName} command palette`],
+    [`Click ${assistantName} Orb`, `Open/focus ${assistantName} and command palette`],
     ['Escape', 'Close command palette / voice recognition stop in supported areas'],
     ['Enter in command input', 'Run command']
   ];
   const troubleshooting = [
-    ['Ollama not detected', 'Luna still works in transparent fallback mode. For local model mode, install Ollama and run: ollama pull qwen2.5:3b'],
+    ['Ollama not detected', `${assistantName} still works in transparent fallback mode. For local model mode, install Ollama and run: ollama pull qwen2.5:3b`],
     ['Embeddings unavailable', 'Knowledge Vault falls back to keyword retrieval. For semantic retrieval, run: ollama pull nomic-embed-text'],
     ['Windows SmartScreen warning', 'This is an unsigned hackathon build. Click More info → Run anyway.'],
     ['Voice unavailable', 'Use transcript mode. Voice is optional and command routing still works.'],
@@ -582,14 +606,13 @@ function HelpCenter({ setTab }: { setTab: (t: Tab)=>void }) {
     ['Demo state messy', 'Use Reset demo in the header or Delete/reset local data in Trust Center.']
   ];
   const demoPaths = [
-    { title: 'Fastest proof', tab: 'showcase' as Tab, text: 'Run Judge Showcase for a one-click end-to-end proof path.' },
-    { title: 'Narrated demo', tab: 'showcase' as Tab, text: 'Click AI Presenter in the sidebar and use Auto play all.' },
-    { title: 'Real-file demo', tab: 'attachments' as Tab, text: 'Import files from demo-assets, summarize, add to Vault, then run Job Mission or Artifact Studio.' },
+    { title: 'Fastest proof', tab: 'showcase' as Tab, text: 'Open Guided Demo and run the one-click end-to-end proof path.' },
+    { title: 'Real-file demo', tab: 'attachments' as Tab, text: 'Import files from demo-assets, summarize, add to Vault, then run a mission from Mission Hub or Artifact Studio.' },
     { title: 'Trust demo', tab: 'trust' as Tab, text: 'Show audit log, SQLite status, external request counter, trust export and reset controls.' }
   ];
   return <div className="grid two">
     <Card title="Help & Demo Guide" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">Use this page during final recording or judging if you need to quickly explain how to operate Luna.</p>
+      <p className="bigcopy">Use this page during final recording or judging if you need to quickly explain how to operate {assistantName}.</p>
       <div className="help-paths">{demoPaths.map(p => <div key={p.title}><b>{p.title}</b><span>{p.text}</span><button onClick={()=>setTab(p.tab)}>Open</button></div>)}</div>
     </Card>
     <Card title="Keyboard & Access" icon={<Activity size={18}/>}> 
@@ -599,12 +622,12 @@ function HelpCenter({ setTab }: { setTab: (t: Tab)=>void }) {
       <div className="trouble-list">{troubleshooting.map(([k,v]) => <div key={k}><b>{k}</b><span>{v}</span></div>)}</div>
     </Card>
     <Card title="Recommended local setup" icon={<Gauge size={18}/>} className="wide"> 
-      <pre className="code-block">{`ollama serve\nollama pull qwen2.5:3b\nollama pull nomic-embed-text\n\n# Then in Luna:\n1. Reset demo\n2. Run AI Presenter or Judge Showcase\n3. Export Trust data`}</pre>
+      <pre className="code-block">{`ollama serve\nollama pull qwen2.5:3b\nollama pull nomic-embed-text\n\n# Then in ${assistantName}:\n1. Reset demo\n2. Open Guided Demo and run it (with or without narration)\n3. Export Trust data`}</pre>
     </Card>
   </div>;
 }
 
-function SkillCreator() {
+function SkillCreator({ assistantName }: { assistantName: string }) {
   const [desc, setDesc] = useState('Create a skill that turns a research PDF into flashcards, quiz questions, and a PDF study report.');
   const [generated, setGenerated] = useState<any>(null);
   const [skills, setSkills] = useState<any[]>([]);
@@ -617,7 +640,7 @@ function SkillCreator() {
   const run = async (id: string) => { setBusy('Running skill locally…'); const res = await window.luna.runSkill(id); setRunResult(res); setBusy(''); };
   return <div className="grid two">
     <Card title="Luna Skill Creator" icon={<Wand2 size={18}/>}> 
-      <p className="hint">Create reusable Luna skills from plain English. Skills use safe built-in tools, permissions and export formats — not arbitrary unsafe code.</p>
+      <p className="hint">Create reusable {assistantName} skills from plain English. Skills use safe built-in tools, permissions and export formats — not arbitrary unsafe code.</p>
       <textarea value={desc} onChange={e=>setDesc(e.target.value)} />
       <div className="row-actions"><button className="primary" onClick={generate} disabled={!!busy}>Generate skill</button>{generated && <button onClick={save} disabled={!!busy}>Save reusable skill</button>}</div>
       {busy && <p className="hint">{busy}</p>}
@@ -653,7 +676,7 @@ function SkillCreator() {
 }
 
 
-function CommandPalette({ open, onClose, pushLog }: { open: boolean; onClose: () => void; pushLog: (s: string)=>void }) {
+function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boolean; onClose: () => void; pushLog: (s: string)=>void; assistantName: string }) {
   const [cmd, setCmd] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any>(null);
@@ -666,11 +689,11 @@ function CommandPalette({ open, onClose, pushLog }: { open: boolean; onClose: ()
     const res = await window.luna.routeCommand(value);
     setResult(res); setBusy(false); pushLog(`Palette routed: ${res.intent}`);
   };
-  const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', 'Ask the vault what Luna proves about privacy', 'Organize my demo Downloads safely', 'Run the codebase explainer mission', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
+  const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Organize my demo Downloads safely', 'Run the codebase explainer mission', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
   return <div className="palette-backdrop" onMouseDown={onClose}>
     <div className="palette" onMouseDown={e=>e.stopPropagation()}>
       <div className="palette-head"><div><b>Luna Command Palette</b><span>Ctrl/Cmd + Shift + L</span></div><button className="ghost" onClick={onClose}>Close</button></div>
-      <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder="Tell Luna what to do…" onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
+      <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder={`Tell ${assistantName} what to do…`} onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
       <div className="palette-suggestions">{suggestions.map(s=><button key={s} onClick={()=>{setCmd(s); run(s);}} disabled={busy}>{s}</button>)}</div>
       {result && <div className="palette-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">{Math.round(result.confidence*100)}% confidence</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
     </div>
@@ -733,123 +756,15 @@ function SettingsPage({ settings, setSettings, pushLog }: { settings: any; setSe
         <label className="check-row"><input type="checkbox" checked={!!form.memoryEnabled} onChange={e=>update('memoryEnabled', e.target.checked)} /> Memory enabled</label>
         <label className="check-row"><input type="checkbox" checked={!!form.voiceEnabled} onChange={e=>update('voiceEnabled', e.target.checked)} /> Voice enabled</label><p className="hint">Voice output prefers feminine voices such as Jenny, Aria, Zira, Samantha or Victoria when installed.</p>
       </div>
-      <p className="hint">Strict privacy keeps permission prompts, audit logs and local-only proof visible throughout Luna.</p>
+      <p className="hint">Strict privacy keeps permission prompts, audit logs and local-only proof visible throughout {form.assistantName || 'Luna'}.</p>
     </Card>
   </div>;
 }
 
 
-function DemoPresenter({ open, onClose, setTab, pushLog }: { open: boolean; onClose: () => void; setTab: (t: Tab)=>void; pushLog: (s:string)=>void }) {
-  const [index, setIndex] = useState(0);
-  const [running, setRunning] = useState(false);
-  const [autoSpeak, setAutoSpeak] = useState(true);
-  const [log, setLog] = useState<string[]>([]);
-  const [artifacts, setArtifacts] = useState<any[]>([]);
-  const [lastResult, setLastResult] = useState<any>(null);
-  const addLog = (s: string) => setLog(l => [`${new Date().toLocaleTimeString()} — ${s}`, ...l].slice(0, 10));
-  const speak = (text: string) => speakAsLuna(text, autoSpeak);
-  const steps = [
-    {
-      tab: 'showcase' as Tab,
-      title: 'Meet Luna',
-      say: 'Welcome to Luna. Luna is a private local AI operating layer for your desktop. It can understand local context, create files, automate safely, and prove what it did.',
-      action: async () => ({ summary: 'Opened Luna Judge Showcase. Notice the local model status, external request counter, and resource meter in the header.' })
-    },
-    {
-      tab: 'mission' as Tab,
-      title: 'Job Application Mission',
-      say: 'First, Luna runs a full job application mission. It reads local demo documents, analyzes fit, and creates real artifacts like a PDF report, DOCX cover letter, and ZIP package.',
-      action: async () => { const r = await window.luna.runJobMission(); setArtifacts(a => [...a, ...r.artifacts]); return r; }
-    },
-    {
-      tab: 'studio' as Tab,
-      title: 'Artifact Studio',
-      say: 'Next, Luna turns local research notes into a presentation package. This produces a PowerPoint deck, PDF brief, HTML page, speaker notes, and ZIP archive.',
-      action: async () => { const r = await window.luna.runResearchMission(); setArtifacts(a => [...a, ...r.artifacts]); return r; }
-    },
-    {
-      tab: 'vault' as Tab,
-      title: 'Knowledge Vault',
-      say: 'Now Luna indexes local documents into a Knowledge Vault and answers with evidence. If an embedding model is installed, Luna uses semantic retrieval; otherwise it falls back safely to keyword retrieval.',
-      action: async () => { await window.luna.vaultIndexDemo(); return await window.luna.vaultAsk('What does Luna prove about privacy and safe automation?'); }
-    },
-    {
-      tab: 'automation' as Tab,
-      title: 'Safe Automation',
-      say: 'Luna can act on files, but safely. It creates a plan, requires approval, writes a manifest, and can undo the entire automation.',
-      action: async () => { const plan = await window.luna.planCleanup(); const exec = await window.luna.executeCleanup(plan); const undo = await window.luna.undoMission(exec.missionId); return { summary: `Planned ${plan.moves.length} moves, executed ${exec.moved}, then restored ${undo.restored} files.` }; }
-    },
-    {
-      tab: 'skills' as Tab,
-      title: 'Luna Skill Creator',
-      say: 'Luna can create reusable local skills from plain English. This means if a new workflow is needed, Luna can define inputs, permissions, steps, and outputs.',
-      action: async () => { const skill = await window.luna.generateSkill('Create a skill that turns a research PDF into flashcards, quiz questions, and a PDF study report.'); const saved = await window.luna.saveSkill(skill); const r = await window.luna.runSkill(saved.skills[0].id); setArtifacts(a => [...a, ...r.artifacts]); return { summary: `Created and ran ${skill.name}.`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy }; }
-    },
-    {
-      tab: 'lens' as Tab,
-      title: 'Luna Lens',
-      say: 'Luna can understand desktop context in a bounded way. It captures active-window and running-app metadata without continuously recording the screen.',
-      action: async () => { const snap = await window.luna.lensContext(); return await window.luna.lensExplain(snap); }
-    },
-    {
-      tab: 'model' as Tab,
-      title: 'Model Inspector',
-      say: 'Luna inspects the local machine, recommends a model class, benchmarks available models, and proves fallback resilience.',
-      action: async () => { const rec = await window.luna.modelRecommend(); const drill = await window.luna.fallbackDrill(); return { summary: `${rec.recommended}. ${drill.fallbackStatus}`, recommendation: rec, drill }; }
-    },
-    {
-      tab: 'trust' as Tab,
-      title: 'Trust Center',
-      say: 'Finally, Luna shows its audit trail. The Trust Center exposes AI calls, artifacts, automations, memory, vault events, model events, network attempts, SQLite status, export, and reset controls.',
-      action: async () => { const audit = await window.luna.auditList(); const db = await window.luna.databaseStatus(); return { summary: `Trust Center has ${audit.length} recent audit events. SQLite database has ${db.tables.length} tracked tables.`, auditCount: audit.length, db }; }
-    }
-  ];
-  const current = steps[index];
-  useEffect(() => { if (open) { setIndex(0); setLog([]); setArtifacts([]); setLastResult(null); } }, [open]);
-  if (!open) return null;
-  const runStep = async () => {
-    setRunning(true);
-    setTab(current.tab);
-    speak(current.say);
-    addLog(`Presenting: ${current.title}`);
-    try {
-      const result = await current.action();
-      setLastResult(result);
-      addLog(result?.summary || `${current.title} completed.`);
-      pushLog(`Presenter completed: ${current.title}`);
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setLastResult({ summary: msg }); addLog(`Error: ${msg}`);
-    }
-    setRunning(false);
-  };
-  const next = () => setIndex(i => Math.min(steps.length - 1, i + 1));
-  const prev = () => setIndex(i => Math.max(0, i - 1));
-  const autoplay = async () => {
-    setRunning(true);
-    for (let i = index; i < steps.length; i++) {
-      const step = steps[i]; setIndex(i); setTab(step.tab); speak(step.say); addLog(`Presenting: ${step.title}`);
-      try { const result = await step.action(); setLastResult(result); addLog(result?.summary || `${step.title} completed.`); }
-      catch (e:any) { addLog(`Error: ${e?.message || String(e)}`); }
-      await new Promise(r => setTimeout(r, 900));
-    }
-    setRunning(false); pushLog('AI Presenter autoplay completed');
-  };
-  return <div className="presenter-backdrop">
-    <div className="presenter-panel">
-      <div className="presenter-top"><div><Badge tone="purple">AI Demo Presenter</Badge><h2>{current.title}</h2><p>Step {index + 1} of {steps.length}</p></div><button className="ghost" onClick={onClose}>Close</button></div>
-      <div className="presenter-progress"><div style={{width:`${((index+1)/steps.length)*100}%`}} /></div>
-      <div className="presenter-body">
-        <div className="presenter-script"><h3>Narration</h3><p>{current.say}</p><label className="toggle"><input type="checkbox" checked={autoSpeak} onChange={e=>setAutoSpeak(e.target.checked)}/> Speak narration</label><div className="row-actions"><button onClick={prev} disabled={running || index===0}>Previous</button><button className="primary" onClick={runStep} disabled={running}>{running?'Running…':'Run this step'}</button><button onClick={next} disabled={running || index===steps.length-1}>Next</button><button onClick={autoplay} disabled={running}>Auto play all</button></div></div>
-        <div className="presenter-result"><h3>Presenter Output</h3>{lastResult ? <pre>{JSON.stringify(lastResult, null, 2).slice(0, 2400)}</pre> : <p className="hint">Run the step to see result data.</p>}</div>
-      </div>
-      <div className="presenter-footer"><div><h4>Generated artifacts</h4><div className="presenter-artifacts">{artifacts.slice(-8).map((a:any,i:number)=><button key={a.path+i} onClick={()=>window.luna.revealPath(a.path)}>{a.name}</button>)}</div></div><div><h4>Presenter log</h4><div className="presenter-log">{log.map(x=><span key={x}>{x}</span>)}</div></div></div>
-    </div>
-  </div>;
-}
-
 function App() {
-  const [tab, setTab] = useState<Tab>('showcase'); const [health, setHealth] = useState<any>(); const [settings, setSettings] = useState<any>(); const [log, setLog] = useState<string[]>([]); const [paletteOpen, setPaletteOpen] = useState(false); const [presenterOpen, setPresenterOpen] = useState(false);
+  const [tab, setTab] = useState<Tab>('showcase'); const [health, setHealth] = useState<any>(); const [settings, setSettings] = useState<any>(); const [log, setLog] = useState<string[]>([]); const [paletteOpen, setPaletteOpen] = useState(false);
+  const assistantName = settings?.assistantName || 'Luna';
   const refresh = async () => setHealth(await window.luna.health());
   const loadSettings = async () => setSettings(await window.luna.settingsGet());
   useEffect(() => { refresh(); loadSettings(); const id = setInterval(refresh, 2500); return () => clearInterval(id); }, []);
@@ -865,28 +780,25 @@ function App() {
   const pushLog = (s: string) => setLog(l => [`${new Date().toLocaleTimeString()} — ${s}`, ...l].slice(0, 8));
   const saveSettings = async (next: any) => { const saved = await window.luna.settingsSave(next); setSettings(saved); pushLog('Settings saved'); };
   return <div className={`app theme-${settings?.theme || 'midnight'} accent-${settings?.accent || 'purple'}`}><Header health={health} onReset={reset} settings={settings}/><aside className="sidebar">
-    <button className={tab==='showcase'?'active':''} onClick={()=>setTab('showcase')}>Judge Showcase</button>
+    <button className={tab==='showcase'?'active':''} onClick={()=>setTab('showcase')}>Guided Demo</button>
     <button className={tab==='capabilities'?'active':''} onClick={()=>setTab('capabilities')}>Capabilities</button>
-    <button onClick={()=>setPresenterOpen(true)}>AI Presenter</button>
     <button className={tab==='command'?'active':''} onClick={()=>setTab('command')}>Command</button>
     <button className={tab==='voice'?'active':''} onClick={()=>setTab('voice')}>Voice</button>
     <button className={tab==='attachments'?'active':''} onClick={()=>setTab('attachments')}>Attachments</button>
     <button className={tab==='missionhub'?'active':''} onClick={()=>setTab('missionhub')}>Mission Hub</button>
-    <button className={tab==='mission'?'active':''} onClick={()=>setTab('mission')}>Job Mission</button>
     <button className={tab==='studio'?'active':''} onClick={()=>setTab('studio')}>Artifact Studio</button>
     <button className={tab==='lens'?'active':''} onClick={()=>setTab('lens')}>Luna Lens</button>
     <button className={tab==='vault'?'active':''} onClick={()=>setTab('vault')}>Knowledge Vault</button>
     <button className={tab==='memory'?'active':''} onClick={()=>setTab('memory')}>Memory</button>
     <button className={tab==='automation'?'active':''} onClick={()=>setTab('automation')}>Automation</button>
-    <button className={tab==='model'?'active':''} onClick={()=>setTab('model')}>Model Inspector</button>
     <button className={tab==='trust'?'active':''} onClick={()=>setTab('trust')}>Trust Center</button>
     <button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}>Settings</button>
     <button className={tab==='help'?'active':''} onClick={()=>setTab('help')}>Help</button>
     <button className={tab==='skills'?'active':''} onClick={()=>setTab('skills')}>Luna Skill Creator</button>
     <div className="mini-log"><b>Activity</b>{log.map(x=><span key={x}>{x}</span>)}</div>
   </aside><main>
-    {tab==='showcase' && <JudgeShowcase pushLog={pushLog}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab}/>} {tab==='command' && <CommandCenter pushLog={pushLog}/>} {tab==='voice' && <VoiceMode pushLog={pushLog}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog}/>} {tab==='mission' && <JobMission pushLog={pushLog}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog}/>} {tab==='automation' && <Automation pushLog={pushLog}/>} {tab==='model' && <ModelInspector pushLog={pushLog}/>} {tab==='trust' && <Trust health={health}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab}/>} {tab==='skills' && <SkillCreator/>}
-  </main><LunaOrb onClick={()=>setPaletteOpen(true)}/><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog}/><DemoPresenter open={presenterOpen} onClose={()=>setPresenterOpen(false)} setTab={setTab} pushLog={pushLog}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
+    {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='command' && <CommandCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
+  </main><LunaOrb onClick={()=>setPaletteOpen(true)}/><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog} assistantName={assistantName}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
 }
 
 

@@ -8,6 +8,8 @@ declare global {
       health: () => Promise<any>;
       resetDemo: () => Promise<any>;
       chat: (messages: any[]) => Promise<any>;
+      transcribeAudio: (samples: Float32Array | number[]) => Promise<{ text: string }>;
+      voiceStatus: () => Promise<{ ready: boolean; cacheDir: string; downloaded: boolean }>;
       runJobMission: () => Promise<any>;
       planCleanup: () => Promise<any>;
       executeCleanup: (plan: any) => Promise<any>;
