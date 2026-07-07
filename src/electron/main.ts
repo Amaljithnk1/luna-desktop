@@ -174,6 +174,7 @@ async function saveSettings(settings: Partial<LunaSettings>): Promise<LunaSettin
   await writeText(settingsPath(), JSON.stringify(next, null, 2));
   getDb().prepare('INSERT OR REPLACE INTO settings (key,value_json) VALUES (?,?)').run('settings', JSON.stringify(next));
   await logAudit('system', 'save_settings', settingsPath(), `Saved Luna settings for assistant ${next.assistantName}.`, 'low');
+  if (orbWindow && !orbWindow.isDestroyed()) await refreshOrbWindow();
   return next;
 }
 
@@ -1290,6 +1291,203 @@ function launchApplication(target: string): Promise<{ ok: boolean; error?: strin
     });
   });
 }
+const KNOWN_FOLDERS: Record<string, Parameters<typeof app.getPath>[0]> = {
+  'desktop': 'desktop',
+  'documents': 'documents',
+  'docs': 'documents',
+  'downloads': 'downloads',
+  'pictures': 'pictures',
+  'photos': 'pictures',
+  'videos': 'videos',
+  'movies': 'videos',
+  'music': 'music',
+  'songs': 'music',
+  'home folder': 'home',
+  'user folder': 'home'
+};
+const SEARCHABLE_FOLDERS: Array<Parameters<typeof app.getPath>[0]> = ['desktop', 'documents', 'downloads', 'pictures'];
+function cleanFileQuery(raw: string): string {
+  return raw
+    .replace(/\b(my|the|a|an|file|document|folder|for|please|that|this)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function extractFolderScope(raw: string): { text: string; folderScope?: Parameters<typeof app.getPath>[0] } {
+  const m = raw.match(/\b(?:from|in)\s+(?:my\s+|the\s+)?([a-z]+)(?:\s+folder)?\b/i);
+  if (m) {
+    const key = m[1].toLowerCase();
+    const folderScope = (KNOWN_FOLDERS as Record<string, Parameters<typeof app.getPath>[0]>)[key];
+    if (folderScope) return { text: raw.slice(0, m.index).trim(), folderScope };
+  }
+  return { text: raw };
+}
+async function walkFiles(dir: string, depth = 2): Promise<string[]> {
+  let found: string[] = [];
+  let entries: any[] = [];
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return found; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory() && depth > 0) found = found.concat(await walkFiles(full, depth - 1));
+    else if (entry.isFile()) found.push(full);
+  }
+  return found;
+}
+function rankFileMatches(matches: string[], query: string): string[] {
+  const q = query.toLowerCase();
+  const score = (p: string) => {
+    const base = path.basename(p).toLowerCase();
+    const withoutExt = base.slice(0, base.length - path.extname(base).length);
+    const exact = (base === q || withoutExt === q) ? 0 : 1;
+    const depth = p.split(path.sep).length;
+    return [exact, depth] as [number, number];
+  };
+  return [...matches].sort((a, b) => {
+    const [ae, ad] = score(a), [be, bd] = score(b);
+    return ae !== be ? ae - be : ad - bd;
+  });
+}
+async function findFilesByName(rawQuery: string): Promise<string[]> {
+  const { text, folderScope } = extractFolderScope(rawQuery);
+  const q = cleanFileQuery(text).toLowerCase();
+  const folders = folderScope ? [folderScope] : SEARCHABLE_FOLDERS;
+  const matches: string[] = [];
+  for (const folderKey of folders) {
+    const root = app.getPath(folderKey);
+    const files = await walkFiles(root, 2);
+    for (const f of files) if (path.basename(f).toLowerCase().includes(q)) matches.push(f);
+  }
+  return rankFileMatches(matches, q);
+}
+function isAmbiguousTop(matches: string[], query: string): boolean {
+  if (matches.length < 2) return false;
+  const ranked = rankFileMatches(matches, query);
+  const topBase = path.basename(ranked[0]).toLowerCase();
+  const secondBase = path.basename(ranked[1]).toLowerCase();
+  const topDepth = ranked[0].split(path.sep).length;
+  const secondDepth = ranked[1].split(path.sep).length;
+  return topBase === secondBase && topDepth === secondDepth;
+}
+async function trySearchFiles(command: string): Promise<CommandRouteResult | null> {
+  const c = command.toLowerCase();
+  if (/vault|evidence|knowledge base/.test(c)) return null;
+  const m = c.match(/\b(?:find|search)(?:\s+for)?\s+(.+?)(?:\s+in\s+my\s+files)?$/i);
+  if (!m) return null;
+  const scoped = extractFolderScope(m[1]);
+  const query = cleanFileQuery(scoped.text);
+  if (!query || query.length < 2) return null;
+  const matches = await findFilesByName(m[1]);
+  const scopeLabel = scoped.folderScope ? `your ${scoped.folderScope} folder` : 'Desktop, Documents, Downloads and Pictures';
+  await logAudit('automation', 'file_search', query, `Searched ${scopeLabel} for "${query}" and found ${matches.length} match(es). Search was read-only.`, 'low');
+  if (matches.length === 0) return { intent: 'file_search', confidence: 0.85, summary: `I couldn't find any file matching "${query}" in ${scopeLabel}.`, actionTaken: `Searched for: ${query}` };
+  const list = matches.slice(0, 8).map(p => `• ${p}`).join('\n');
+  return { intent: 'file_search', confidence: 0.9, summary: `Found ${matches.length} file(s) matching "${query}":\n${list}`, actionTaken: `Searched for: ${query}`, extra: matches };
+}
+type LastFileAction = { type: 'delete' | 'move' | 'rename'; from: string; to: string; label: string };
+let lastFileAction: LastFileAction | null = null;
+function lunaTrashDir() { return path.join(app.getPath('userData'), 'luna-trash'); }
+async function softTrash(filePath: string): Promise<string> {
+  await fs.mkdir(lunaTrashDir(), { recursive: true });
+  const dest = path.join(lunaTrashDir(), `${Date.now()}-${path.basename(filePath)}`);
+  await fs.rename(filePath, dest);
+  return dest;
+}
+async function undoLastFileAction(): Promise<{ ok: boolean; message: string }> {
+  if (!lastFileAction) return { ok: false, message: 'There is no recent file action to undo.' };
+  const { from, to, label } = lastFileAction;
+  try {
+    await fs.rename(to, from);
+    await logAudit('automation', 'file_action_undo', from, `Reversed previous action ("${label}"), restoring "${from}".`, 'low');
+    lastFileAction = null;
+    return { ok: true, message: `Undid it — restored "${path.basename(from)}".` };
+  } catch (e: any) {
+    return { ok: false, message: `Couldn't undo: ${e?.message || e}` };
+  }
+}
+async function tryDeleteFile(command: string): Promise<CommandRouteResult | null> {
+  const c = command.toLowerCase();
+  const m = c.match(/\b(?:delete|remove|trash)\s+(.+)/i);
+  if (!m) return null;
+  const scoped = extractFolderScope(m[1]);
+  const query = cleanFileQuery(scoped.text);
+  if (!query) return null;
+  const matches = await findFilesByName(m[1]);
+  const scopeLabel = scoped.folderScope ? `your ${scoped.folderScope} folder` : 'Desktop, Documents, Downloads or Pictures folders';
+  if (matches.length === 0) {
+    return { intent: 'file_delete', confidence: 0.8, summary: `I couldn't find a file matching "${query}" in ${scopeLabel}, so nothing was deleted.`, actionTaken: `Attempted delete: ${query}` };
+  }
+  if (isAmbiguousTop(matches, query)) {
+    const list = matches.slice(0, 5).map(p => `• ${p}`).join('\n');
+    return { intent: 'file_delete', confidence: 0.6, summary: `I found more than one file matching "${query}" and I'm not confident which one you mean, so I didn't delete anything:\n${list}\nTry being more specific, e.g. include the folder name.`, actionTaken: `Ambiguous delete: ${query}` };
+  }
+  const target = matches[0];
+  try {
+    const trashedPath = await softTrash(target);
+    lastFileAction = { type: 'delete', from: target, to: trashedPath, label: `deleted ${path.basename(target)}` };
+    await logAudit('automation', 'file_delete', target, `Moved "${target}" to Luna's local trash folder (not permanently deleted). No confirmation was required because this is reversible — say "undo" to restore it.`, 'medium');
+    return { intent: 'file_delete', confidence: 0.9, summary: `Moved "${path.basename(target)}" to Luna's trash. Say "undo" any time to restore it.`, actionTaken: `Trashed file: ${target}` };
+  } catch (e: any) {
+    await logAudit('automation', 'file_delete_failed', target, e?.message || String(e), 'medium');
+    return { intent: 'file_delete', confidence: 0.8, summary: `I found "${path.basename(target)}" but couldn't delete it: ${e?.message || e}.`, actionTaken: `Attempted delete: ${target}` };
+  }
+}
+async function tryUndoFileAction(command: string): Promise<CommandRouteResult | null> {
+  if (!/\bundo\b/i.test(command)) return null;
+  const result = await undoLastFileAction();
+  return { intent: 'file_undo', confidence: 0.9, summary: result.message, actionTaken: result.ok ? 'Undid last file action' : 'Undo failed' };
+}
+async function tryMoveOrRename(command: string): Promise<CommandRouteResult | null> {
+  const c = command.toLowerCase();
+  const renameMatch = c.match(/\brename\s+(.+?)\s+to\s+(.+)/i);
+  const moveMatch = !renameMatch ? c.match(/\bmove\s+(.+?)\s+to\s+(?:the\s+)?(.+?)(?:\s+folder)?$/i) : null;
+  if (!renameMatch && !moveMatch) return null;
+  const [, sourceQuery, destQuery] = (renameMatch || moveMatch)!;
+  const cleanedSource = cleanFileQuery(extractFolderScope(sourceQuery).text);
+  const matches = await findFilesByName(sourceQuery);
+  if (matches.length === 0) {
+    return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.8, summary: `I couldn't find a file matching "${cleanedSource}" to ${renameMatch ? 'rename' : 'move'}.`, actionTaken: `Attempted ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
+  }
+  if (isAmbiguousTop(matches, cleanedSource)) {
+    const list = matches.slice(0, 5).map(p => `• ${p}`).join('\n');
+    return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.6, summary: `I found more than one file matching "${cleanedSource}" and I'm not confident which one you mean, so I didn't ${renameMatch ? 'rename' : 'move'} anything:\n${list}\nTry being more specific, e.g. include the folder name.`, actionTaken: `Ambiguous ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
+  }
+  const source = matches[0];
+  try {
+    if (renameMatch) {
+      const newName = path.basename(destQuery.trim());
+      const dest = path.join(path.dirname(source), newName);
+      await fs.rename(source, dest);
+      lastFileAction = { type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` };
+      await logAudit('automation', 'file_rename', source, `Renamed "${source}" to "${newName}". Say "undo" to reverse it.`, 'low');
+      return { intent: 'file_rename', confidence: 0.9, summary: `Renamed "${path.basename(source)}" to "${newName}". Say "undo" to reverse it.`, actionTaken: `Renamed file to: ${newName}` };
+    } else {
+      const folderKey = Object.keys(KNOWN_FOLDERS).sort((a, b) => b.length - a.length).find(name => destQuery.includes(name));
+      if (!folderKey) return { intent: 'file_move', confidence: 0.7, summary: `I found "${path.basename(source)}" but didn't recognize the destination "${destQuery.trim()}". Try a folder like Desktop, Documents, Downloads, Pictures, Videos or Music.`, actionTaken: `Attempted move: ${cleanedSource}` };
+      const destDir = app.getPath(KNOWN_FOLDERS[folderKey]);
+      const dest = path.join(destDir, path.basename(source));
+      try { await fs.rename(source, dest); } catch { await fs.copyFile(source, dest); await fs.unlink(source); }
+      lastFileAction = { type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` };
+      await logAudit('automation', 'file_move', source, `Moved "${source}" to "${dest}". Say "undo" to reverse it.`, 'low');
+      return { intent: 'file_move', confidence: 0.9, summary: `Moved "${path.basename(source)}" to your ${folderKey} folder. Say "undo" to reverse it.`, actionTaken: `Moved file to: ${folderKey}` };
+    }
+  } catch (e: any) {
+    await logAudit('automation', renameMatch ? 'file_rename_failed' : 'file_move_failed', source, e?.message || String(e), 'low');
+    return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.8, summary: `I found "${path.basename(source)}" but the operation failed: ${e?.message || e}.`, actionTaken: `Attempted ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
+  }
+}
+async function tryOpenFolder(command: string): Promise<CommandRouteResult | null> {
+  const c = command.toLowerCase();
+  if (!/\b(open|show|launch|go to)\b/.test(c)) return null;
+  const matchKey = Object.keys(KNOWN_FOLDERS).sort((a, b) => b.length - a.length).find(name => c.includes(name));
+  if (!matchKey) return null;
+  const folderPath = app.getPath(KNOWN_FOLDERS[matchKey]);
+  const err = await shell.openPath(folderPath);
+  if (!err) {
+    await logAudit('automation', 'folder_open', matchKey, `Opened the local ${matchKey} folder (${folderPath}) in File Explorer. No confirmation was required because opening a folder is read-only and reversible.`, 'low');
+    return { intent: 'folder_open', confidence: 0.9, summary: `Opened your ${matchKey} folder in File Explorer.`, actionTaken: `Opened local folder: ${matchKey}` };
+  }
+  await logAudit('automation', 'folder_open_failed', matchKey, err, 'low');
+  return { intent: 'folder_open', confidence: 0.9, summary: `I tried to open your ${matchKey} folder but it failed: ${err}.`, actionTaken: `Attempted to open folder: ${matchKey}` };
+}
 async function tryLaunchApp(command: string): Promise<CommandRouteResult | null> {
   const c = command.toLowerCase();
   if (!/\b(open|launch|start|run)\b/.test(c)) return null;
@@ -1305,8 +1503,18 @@ async function tryLaunchApp(command: string): Promise<CommandRouteResult | null>
   return { intent: 'app_launch', confidence: 0.9, summary: `I tried to open ${matchKey} but it failed: ${result.error}. It may not be installed, or may need a different launch command on this system.`, actionTaken: `Attempted to launch: ${matchKey}` };
 }
 async function routeCommand(command: string): Promise<CommandRouteResult> {
+  const undo = await tryUndoFileAction(command);
+  if (undo) return undo;
+  const moveOrRename = await tryMoveOrRename(command);
+  if (moveOrRename) return moveOrRename;
+  const deleteFile = await tryDeleteFile(command);
+  if (deleteFile) return deleteFile;
+  const folderOpen = await tryOpenFolder(command);
+  if (folderOpen) return folderOpen;
   const appLaunch = await tryLaunchApp(command);
   if (appLaunch) return appLaunch;
+  const fileSearch = await trySearchFiles(command);
+  if (fileSearch) return fileSearch;
   const c = command.toLowerCase();
   if (/codebase|repository|repo|architecture|explain code/.test(c)) {
     const r = await runMissionTemplate('codebase');
@@ -1460,14 +1668,40 @@ async function openMainCommandPalette() {
   mainWindow.webContents.send('shortcut:command-palette');
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
+}
+
+async function renderOrbWindowHtml() {
+  const settings = await getSettings();
+  const assistantName = escapeHtml(settings.assistantName || 'Luna');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:Inter,Segoe UI,sans-serif;user-select:none}
+    .wrap{width:100%;height:100%;display:grid;place-items:center;-webkit-app-region:drag;position:relative;padding:24px 24px 36px;box-sizing:border-box}
+    .wrap::before{content:'';position:absolute;inset:18px;border:1px solid rgba(255,255,255,.18);border-radius:999px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.05),0 0 0 1px rgba(255,255,255,.03);pointer-events:none}
+    .wrap:hover{cursor:grab}
+    .wrap:active{cursor:grabbing}
+    button{width:78px;height:78px;border-radius:999px;border:1px solid rgba(255,255,255,.55);color:white;cursor:pointer;-webkit-app-region:no-drag;background:radial-gradient(circle at 30% 24%,#fff 0,#c4b5fd 18%,#8b5cf6 47%,#111827 100%);box-shadow:0 0 36px rgba(139,92,246,.85),0 18px 50px rgba(0,0,0,.5);display:grid;place-items:center;position:relative;animation:pulse 2.2s ease-in-out infinite;transition:transform .2s ease}
+    button:after{content:'${assistantName}';position:absolute;bottom:-24px;left:50%;transform:translateX(-50%);font-size:12px;font-weight:800;text-shadow:0 2px 8px #000;color:#eef2ff;letter-spacing:.3px}
+    svg{filter:drop-shadow(0 2px 6px rgba(0,0,0,.45))}
+    @keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 30px rgba(139,92,246,.75),0 18px 50px rgba(0,0,0,.5)}50%{transform:scale(1.05);box-shadow:0 0 48px rgba(6,182,212,.75),0 18px 50px rgba(0,0,0,.5)}}
+  </style></head><body><div class="wrap"><button id="orb" title="Open ${assistantName}"><svg width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.3 8.7 8.1 3 9.3l5.7 1.2 1.2 5.7 1.2-5.7 5.7-1.2-5.7-1.2-1.2-5.8Z"/><path d="M19 13l-.7 3.1-3.1.7 3.1.7.7 3.1.7-3.1 3.1-.7-3.1-.7L19 13Z"/></svg></button></div><script>document.getElementById('orb').addEventListener('click',()=>window.luna.openMainCommandPalette());</script></body></html>`;
+}
+
+async function refreshOrbWindow() {
+  if (!orbWindow || orbWindow.isDestroyed()) return;
+  const html = await renderOrbWindowHtml();
+  await orbWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+}
+
 async function createOrbWindow() {
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.workAreaSize;
   orbWindow = new BrowserWindow({
-    width: 92,
-    height: 116,
-    x: Math.max(20, width - 124),
-    y: Math.max(20, height - 148),
+    width: 150,
+    height: 180,
+    x: Math.max(20, width - 170),
+    y: Math.max(20, height - 200),
     frame: false,
     transparent: true,
     resizable: false,
@@ -1482,16 +1716,7 @@ async function createOrbWindow() {
   });
   orbWindow.setAlwaysOnTop(true, 'floating');
   orbWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-    html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:Inter,Segoe UI,sans-serif;user-select:none}
-    .wrap{width:100%;height:100%;display:grid;place-items:center;-webkit-app-region:drag}
-    button{width:78px;height:78px;border-radius:999px;border:1px solid rgba(255,255,255,.55);color:white;cursor:pointer;-webkit-app-region:no-drag;background:radial-gradient(circle at 30% 24%,#fff 0,#c4b5fd 18%,#8b5cf6 47%,#111827 100%);box-shadow:0 0 36px rgba(139,92,246,.85),0 18px 50px rgba(0,0,0,.5);display:grid;place-items:center;position:relative;animation:pulse 2.2s ease-in-out infinite}
-    button:after{content:'Luna';position:absolute;bottom:-24px;left:50%;transform:translateX(-50%);font-size:12px;font-weight:800;text-shadow:0 2px 8px #000;color:#eef2ff;letter-spacing:.3px}
-    svg{filter:drop-shadow(0 2px 6px rgba(0,0,0,.45))}
-    @keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 30px rgba(139,92,246,.75),0 18px 50px rgba(0,0,0,.5)}50%{transform:scale(1.05);box-shadow:0 0 48px rgba(6,182,212,.75),0 18px 50px rgba(0,0,0,.5)}}
-    .hint{position:absolute;bottom:2px;left:0;right:0;text-align:center;color:#dbe4ff;font-size:9px;text-shadow:0 2px 7px #000;opacity:.85}
-  </style></head><body><div class="wrap"><button id="orb" title="Open Luna"><svg width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.3 8.7 8.1 3 9.3l5.7 1.2 1.2 5.7 1.2-5.7 5.7-1.2-5.7-1.2-1.2-5.8Z"/><path d="M19 13l-.7 3.1-3.1.7 3.1.7.7 3.1.7-3.1 3.1-.7-3.1-.7L19 13Z"/></svg></button><div class="hint">Ctrl+Shift+L</div></div><script>document.getElementById('orb').addEventListener('click',()=>window.luna.openMainCommandPalette());</script></body></html>`;
-  await orbWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  await refreshOrbWindow();
   orbWindow.on('closed', () => { orbWindow = null; });
 }
 

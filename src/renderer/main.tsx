@@ -700,11 +700,6 @@ function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boole
   </div>;
 }
 
-function LunaOrb({ onClick }: { onClick: () => void }) {
-  return <button className="floating-orb" onClick={onClick} title="Open Luna Command Palette"><Sparkles size={24}/><span>Luna</span></button>;
-}
-
-
 function Onboarding({ settings, onSave }: { settings: any; onSave: (s: any)=>void }) {
   const [form, setForm] = useState<any>(settings || {});
   useEffect(() => setForm(settings || {}), [settings]);
@@ -798,7 +793,7 @@ function App() {
     <div className="mini-log"><b>Activity</b>{log.map(x=><span key={x}>{x}</span>)}</div>
   </aside><main>
     {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='command' && <CommandCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
-  </main><LunaOrb onClick={()=>setPaletteOpen(true)}/><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog} assistantName={assistantName}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
+  </main><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog} assistantName={assistantName}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
 }
 
 
