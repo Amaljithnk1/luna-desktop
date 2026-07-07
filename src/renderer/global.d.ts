@@ -20,7 +20,9 @@ declare global {
       generateSkill: (description: string) => Promise<any>;
       saveSkill: (skill: any) => Promise<any>;
       listSkills: () => Promise<any>;
-      runSkill: (skillId: string) => Promise<any>;
+      runSkill: (skillId: string, inputValues?: Record<string, any>) => Promise<any>;
+      openFileDialog: (accept?: string[]) => Promise<string | null>;
+      openFolderDialog: () => Promise<string | null>;
       vaultIndexDemo: () => Promise<any>;
       vaultImportFiles: () => Promise<any>;
       vaultState: () => Promise<any>;

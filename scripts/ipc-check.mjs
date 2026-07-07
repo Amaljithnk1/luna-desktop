@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-const preload = fs.readFileSync('src/electron/preload.ts', 'utf8');
+const preload = fs.readFileSync('src/electron/preload.cts', 'utf8');
 const main = fs.readFileSync('src/electron/main.ts', 'utf8');
 const invokes = [...preload.matchAll(/ipcRenderer\.invoke\(['"`]([^'"`]+)['"`]/g)].map(m => m[1]);
 const handles = [...main.matchAll(/ipcMain\.handle\(['"`]([^'"`]+)['"`]/g)].map(m => m[1]);

@@ -731,17 +731,65 @@ function slugify(text: string) {
 function looksLikeUnsupportedLiveExternalRequest(description: string): boolean {
   const text = String(description || '').toLowerCase();
   const hasLocalInputCue = /(from my|from the|from this|provided|uploaded|attached|local|document|transcript|file|folder|resume|invoice|meeting|notes|source)/i.test(text);
-  const hasExternalDataCue = /(netflix|streaming|catalog|shows|movies|price|prices|inventory|stock|weather|news|sports|event|events|schedule|schedules|live|real-time|current|latest|up-to-date|today|tonight|now|online|web|internet|available)/i.test(text);
+  const hasExternalDataCue = /(netflix|spotify|streaming|catalog|shows|movies|anime|manga|song|songs|playlist|artist|price|prices|inventory|stock|stocks|weather|news|sports|event|events|schedule|schedules|live|real-time|current|latest|up-to-date|today|tonight|now|online|web|internet|available|popular|top|best)/i.test(text);
   const asksForCurrentInfo = /(current|latest|up-to-date|live|real-time|today|tonight|now|available|catalog|what's on|what is on)/i.test(text);
   const isLocalContentTask = /(summarize|summary|analyze|extract|organize|transform|convert|rewrite|compare|notes|transcript|resume|invoice|meeting|document|file|folder)/i.test(text);
-  return hasExternalDataCue && !hasLocalInputCue && (asksForCurrentInfo || /(?:netflix|streaming|catalog|shows|movies|price|prices|inventory|stock|weather|news|events|schedule)/i.test(text)) && !isLocalContentTask;
+  return hasExternalDataCue && !hasLocalInputCue && (asksForCurrentInfo || /(?:netflix|spotify|streaming|catalog|shows|movies|anime|manga|song|songs|playlist|artist|price|prices|inventory|stock|stocks|weather|news|events|schedule|popular|top|best)/i.test(text)) && !isLocalContentTask;
 }
 
 function buildSkillArtifactPath(skillDir: string, stem: string, ext: string) {
   return path.join(skillDir, `${slugify(stem)}.${ext.replace(/^\./, '')}`);
 }
 
-async function resolveSkillInput(skill: LunaSkill) {
+async function resolveSkillInput(skill: LunaSkill, context?: any) {
+  const inputValues = context?.inputValues || {};
+  const hasRealInputs = skill.inputs?.some(i => ['file', 'folder', 'text'].includes(i.type));
+
+  if (hasRealInputs && Object.keys(inputValues).length > 0) {
+    const fileOrFolderInputs = skill.inputs?.filter(i => ['file', 'folder'].includes(i.type)) || [];
+    let firstFilePath: string | undefined = undefined;
+    for (const inp of fileOrFolderInputs) {
+      const val = inputValues[inp.name];
+      if (val && typeof val === 'string') {
+        firstFilePath = val;
+        break;
+      }
+    }
+
+    const parts: string[] = [];
+    for (const inp of skill.inputs || []) {
+      const val = inputValues[inp.name];
+      if (val !== undefined && val !== null) {
+        const valStr = String(val);
+        if (inp.type === 'file' || inp.type === 'folder') {
+          let resolvedPath = valStr;
+          try {
+            const stat = await fs.stat(valStr);
+            if (stat.isDirectory()) {
+              const entries = await fs.readdir(valStr);
+              const files = entries.filter(x => !x.startsWith('.'));
+              if (files.length) {
+                resolvedPath = path.join(valStr, files[0]);
+              }
+            }
+          } catch {}
+          const docText = await readDocumentAny(resolvedPath);
+          parts.push(`Input [${inp.name}]:\n${docText}`);
+        } else if (inp.type === 'text') {
+          parts.push(`Input [${inp.name}]:\n${valStr}`);
+        }
+      }
+    }
+
+    const combinedText = parts.join('\n\n') || skill.description;
+    return {
+      sourceType: 'text' as const,
+      text: combinedText,
+      path: firstFilePath,
+      name: firstFilePath ? path.basename(firstFilePath) : undefined
+    };
+  }
+
   const preferred = skill.inputs?.find(i => ['file', 'folder', 'text', 'demo'].includes(i.type)) || skill.inputs?.[0];
   if (!preferred) return { sourceType: 'text' as const, text: skill.description };
   if (preferred.type === 'text') return { sourceType: 'text' as const, text: preferred.description || skill.description };
@@ -776,7 +824,7 @@ async function playSkillTool(tool: string, step: LunaSkill['steps'][number], con
 
 const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], context: any, skill: LunaSkill, skillDir: string) => Promise<any>> = {
   async read_input(_step, context, skill) {
-    const resolved = await resolveSkillInput(skill);
+    const resolved = await resolveSkillInput(skill, context);
     let text = '';
     if (resolved.sourceType === 'text') text = resolved.text || skill.description;
     else if (resolved.path) text = await readDocumentAny(resolved.path);
@@ -1042,6 +1090,8 @@ async function generateSkill(description: string): Promise<LunaSkill> {
     'Allowed output types: pdf, docx, md, html, zip, json, csv, ics.',
     'If the request requires internet access, external accounts, third-party app control, or live/external data that Luna cannot access locally, return {"unsupported":true,"reason":"..."} instead of inventing a fake skill.',
     'Do not generate skills that pretend to know current catalogs, prices, inventory, weather, news, schedules, or other time-sensitive facts without a real local data source.',
+    'Do not invent arbitrary or unrelated inputs (e.g. startDate/endDate for list generation) that are not directly implied by the request or explicitly required. If you cannot associate a legitimate local input (like a file, folder, or custom text representing the user\'s local data) with the task, you must return {"unsupported":true,"reason":"..."}.',
+    'For every output type declared in "outputs" (e.g. json, csv, pdf, md), you MUST include a corresponding export step in "steps" (e.g. export_json, export_csv, export_pdf, export_markdown). Do not declare outputs without corresponding export steps.',
     'The skill must reflect the user request, stay within local safe desktop automation, and never invent arbitrary code execution tools.',
     `User request: ${description}`
   ].join('\n');
@@ -1105,7 +1155,7 @@ async function deleteSkill(skillId: string): Promise<{ ok: boolean; skills: Luna
 
 function csvEscape(x: string) { return `"${String(x).replace(/"/g, '""')}"`; }
 
-async function runSkill(skillId: string): Promise<SkillRunResult> {
+async function runSkill(skillId: string, inputValues?: Record<string, any>): Promise<SkillRunResult> {
   const skill = (await listSkills()).find(s => s.id === skillId);
   if (!skill) throw new Error(`Skill not found: ${skillId}`);
   const trace: MissionTraceItem[] = [];
@@ -1122,22 +1172,45 @@ async function runSkill(skillId: string): Promise<SkillRunResult> {
     return { skill, artifacts, trace, privacy };
   }
 
-  const context: any = { artifactPaths: [] as string[] };
-  for (const step of skill.steps || []) {
-    trace.push({ time: now(), title: step.label, detail: step.detail });
-    const result = await playSkillTool(step.tool, step, context, skill, skillDir);
-    if (result?.path) {
-      const artifactName = path.basename(result.path);
-      addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type']);
+  const context: any = { artifactPaths: [] as string[], inputValues: inputValues || {} };
+  let executionError: string | null = null;
+
+  try {
+    for (const step of skill.steps || []) {
+      trace.push({ time: now(), title: step.label, detail: step.detail });
+      const result = await playSkillTool(step.tool, step, context, skill, skillDir);
+      if (result?.path) {
+        const artifactName = path.basename(result.path);
+        addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type']);
+      }
+      if (result?.text) context.currentText = result.text;
+      if (result?.json !== undefined) context.currentJson = result.json;
+      privacy.push({ time: now(), action: step.tool, target: skill.name, detail: `Executed skill step: ${step.label}` });
     }
-    if (result?.text) context.currentText = result.text;
-    if (result?.json !== undefined) context.currentJson = result.json;
-    privacy.push({ time: now(), action: step.tool, target: skill.name, detail: `Executed skill step: ${step.label}` });
+  } catch (err: any) {
+    executionError = err?.message || String(err);
+    trace.push({ time: now(), title: 'Execution failed', detail: executionError || 'Unknown error' });
+    privacy.push({ time: now(), action: 'execution_error', target: skill.name, detail: `Error during execution: ${executionError || 'Unknown error'}` });
   }
+
   if (artifacts.length) {
     privacy.push({ time: now(), action: 'write_artifacts', target: skillDir, detail: `Saved ${artifacts.length} skill artifacts locally.` });
   } else {
-    trace.push({ time: now(), title: 'No artifacts produced', detail: 'The skill completed, but no local artifact files were written.' });
+    let detail = 'The skill completed, but no local artifact files were written.';
+    if (executionError) {
+      detail = `Execution aborted due to an error: ${executionError}`;
+    } else {
+      const hasExportStep = skill.steps?.some(step => step.tool.startsWith('export_'));
+      if (!hasExportStep) {
+        detail = 'The skill definition did not include any export steps (e.g. export_json, export_pdf) to save files to your workspace.';
+      } else {
+        const hasZipOnly = skill.steps?.every(step => !step.tool.startsWith('export_') || step.tool === 'export_zip');
+        if (hasZipOnly) {
+          detail = 'The skill only included a ZIP export step, but no other files were written to package into the ZIP.';
+        }
+      }
+    }
+    trace.push({ time: now(), title: 'No artifacts produced', detail });
     privacy.push({ time: now(), action: 'skill_no_artifacts', target: skill.name, detail: 'No skill artifacts were produced by this run.' });
   }
   await logAudit('skill', 'run_skill', skill.name, `Ran skill and generated ${artifacts.length} artifact(s).`, 'low');
@@ -2053,7 +2126,28 @@ app.whenReady().then(async () => {
   ipcMain.handle('skill:save', (_e, skill: LunaSkill) => saveSkill(skill));
   ipcMain.handle('skills:delete', (_e, skillId: string) => deleteSkill(skillId));
   ipcMain.handle('skill:list', listSkills);
-  ipcMain.handle('skill:run', (_e, skillId: string) => runSkill(skillId));
+  ipcMain.handle('skill:run', (_e, skillId: string, inputValues?: Record<string, any>) => runSkill(skillId, inputValues));
+  ipcMain.handle('dialog:open-file', async (_e, accept?: string[]) => {
+    const filters: any[] = [];
+    if (accept && accept.length) {
+      const extensions = accept.map(ext => ext.replace(/^\./, ''));
+      filters.push({ name: 'Supported files', extensions });
+    }
+    filters.push({ name: 'All Files', extensions: ['*'] });
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openFile'],
+      filters
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    return res.filePaths[0];
+  });
+  ipcMain.handle('dialog:open-folder', async (_e) => {
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      properties: ['openDirectory']
+    });
+    if (res.canceled || !res.filePaths.length) return null;
+    return res.filePaths[0];
+  });
   ipcMain.handle('vault:index-demo', indexDemoVault);
   ipcMain.handle('vault:import-files', importVaultFiles);
   ipcMain.handle('vault:state', readVault);

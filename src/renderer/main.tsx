@@ -633,12 +633,81 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
   const [skills, setSkills] = useState<any[]>([]);
   const [runResult, setRunResult] = useState<any>(null);
   const [busy, setBusy] = useState('');
+  
+  // Prompt modal states
+  const [promptSkill, setPromptSkill] = useState<any>(null);
+  const [promptValues, setPromptValues] = useState<Record<string, string>>({});
+  const [attachmentsList, setAttachmentsList] = useState<any[]>([]);
+
   const refresh = async () => setSkills(await window.luna.listSkills());
   useEffect(() => { refresh(); }, []);
+  
   const generate = async () => { setBusy('Generating skill…'); const skill = await window.luna.generateSkill(desc); setGenerated(skill); setBusy(''); };
   const save = async () => { if (!generated) return; setBusy('Saving skill…'); const res = await window.luna.saveSkill(generated); setSkills(res.skills); setBusy(''); };
   const remove = async (id: string) => { setBusy('Deleting skill…'); const res = await window.luna.deleteSkill(id); setSkills(res.skills); setBusy(''); };
-  const run = async (id: string) => { setBusy('Running skill locally…'); const res = await window.luna.runSkill(id); setRunResult(res); setBusy(''); };
+  
+  const run = async (id: string, values?: Record<string, any>) => {
+    setBusy('Running skill locally…');
+    try {
+      const res = await window.luna.runSkill(id, values);
+      setRunResult(res);
+    } catch (e: any) {
+      console.error(e);
+      const targetSkill = skills.find(s => s.id === id);
+      setRunResult({
+        skill: targetSkill || { name: 'Skill Execution Failure' },
+        artifacts: [],
+        trace: [{ time: new Date().toLocaleTimeString(), title: 'Execution failed', detail: e?.message || String(e) }],
+        privacy: [{ time: new Date().toLocaleTimeString(), action: 'execution_error', target: id, detail: e?.message || String(e) }]
+      });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const handleRunClick = async (skill: any) => {
+    const realInputs = (skill.inputs || []).filter((i: any) => ['file', 'folder', 'text'].includes(i.type));
+    if (realInputs.length === 0) {
+      await run(skill.id);
+      return;
+    }
+
+    try {
+      const attachments = await window.luna.attachmentsList();
+      setAttachmentsList(attachments.items || []);
+    } catch (e) {
+      setAttachmentsList([]);
+    }
+
+    const initialValues: Record<string, string> = {};
+    realInputs.forEach((i: any) => {
+      initialValues[i.name] = '';
+    });
+    setPromptValues(initialValues);
+    setPromptSkill(skill);
+  };
+
+  const handleExecuteSkill = async () => {
+    if (!promptSkill) return;
+    const values = { ...promptValues };
+    setPromptSkill(null);
+    await run(promptSkill.id, values);
+  };
+
+  const handlePickFile = async (inputName: string, accept?: string[]) => {
+    const path = await window.luna.openFileDialog(accept);
+    if (path) {
+      setPromptValues(prev => ({ ...prev, [inputName]: path }));
+    }
+  };
+
+  const handlePickFolder = async (inputName: string) => {
+    const path = await window.luna.openFolderDialog();
+    if (path) {
+      setPromptValues(prev => ({ ...prev, [inputName]: path }));
+    }
+  };
+
   return <div className="grid two">
     <Card title="Skill Creator" icon={<Wand2 size={18}/>}> 
       <p className="hint">Create reusable {assistantName} skills from plain English. Skills use safe built-in tools, permissions and export formats — not arbitrary unsafe code.</p>
@@ -661,7 +730,7 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
         {skills.map(skill => <div className="skill-card" key={skill.id}>
           <div><b>{skill.name}</b><span>{skill.description}</span><small>{skill.category} · {skill.outputs.length} outputs · {skill.permissions.length} permissions</small></div>
           <div className="skill-card-actions">
-            <button onClick={()=>run(skill.id)} disabled={!!busy}>Run</button>
+            <button onClick={()=>handleRunClick(skill)} disabled={!!busy}>Run</button>
             <button className="secondary" onClick={()=>remove(skill.id)} disabled={!!busy}>Delete</button>
           </div>
         </div>)}
@@ -678,6 +747,97 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
         <div><h4>Privacy trace</h4>{runResult.privacy.map((p:any,i:number)=><div className="privacy-row compact" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}{!runResult.privacy.length && <p className="hint">No privacy events were recorded.</p>}</div>
       </div>
     </Card>}
+
+    {promptSkill && (() => {
+      const realInputs = (promptSkill.inputs || []).filter((i: any) => ['file', 'folder', 'text'].includes(i.type));
+      const canRun = realInputs.every((i: any) => promptValues[i.name] && promptValues[i.name].trim().length > 0);
+
+      return (
+        <div className="prompt-backdrop" onMouseDown={() => setPromptSkill(null)}>
+          <div className="prompt-panel" onMouseDown={e => e.stopPropagation()}>
+            <div className="prompt-header">
+              <h2>Fulfill Skill Inputs</h2>
+              <p>Provide the required inputs to run <strong>{promptSkill.name}</strong> locally.</p>
+            </div>
+            <div className="prompt-body">
+              {realInputs.map((input: any) => {
+                const val = promptValues[input.name] || '';
+                const acceptedExts = input.accept || [];
+                
+                return (
+                  <div key={input.name} className="prompt-field">
+                    <div className="prompt-field-label">
+                      <span>{input.name}</span>
+                      <Badge tone={input.type === 'file' ? 'purple' : input.type === 'folder' ? 'good' : 'warn'}>
+                        {input.type}
+                      </Badge>
+                    </div>
+                    {input.description && <div className="prompt-field-desc">{input.description}</div>}
+                    
+                    {input.type === 'text' && (
+                      <textarea
+                        value={val}
+                        onChange={e => setPromptValues(prev => ({ ...prev, [input.name]: e.target.value }))}
+                        placeholder={`Enter text for ${input.name}...`}
+                        style={{ minHeight: '80px', marginTop: '6px' }}
+                      />
+                    )}
+
+                    {(input.type === 'file' || input.type === 'folder') && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
+                        <div className="prompt-file-picker">
+                          <div className="prompt-file-path">
+                            {val || <span style={{ color: '#64748b' }}>No path selected</span>}
+                          </div>
+                          <button
+                            onClick={() => input.type === 'file' ? handlePickFile(input.name, input.accept) : handlePickFolder(input.name)}
+                          >
+                            Browse...
+                          </button>
+                        </div>
+
+                        {input.type === 'file' && attachmentsList.length > 0 && (
+                          <div className="prompt-attachment-select">
+                            <span>Quick-select from Attachments</span>
+                            <div className="prompt-attachment-chips">
+                              {attachmentsList.map(item => {
+                                const isSelected = val === item.storedPath;
+                                const itemExt = '.' + item.type.toLowerCase();
+                                const isMatch = acceptedExts.length === 0 || acceptedExts.some((ext: string) => {
+                                  return ext.toLowerCase() === itemExt || ext.toLowerCase() === item.type.toLowerCase();
+                                });
+                                
+                                return (
+                                  <button
+                                    key={item.id}
+                                    className={`prompt-attachment-chip ${isSelected ? 'selected' : ''}`}
+                                    style={{ opacity: isMatch ? 1 : 0.5 }}
+                                    onClick={() => setPromptValues(prev => ({ ...prev, [input.name]: item.storedPath }))}
+                                    title={item.originalPath}
+                                  >
+                                    {item.name}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="prompt-footer">
+              <button className="secondary" onClick={() => setPromptSkill(null)}>Cancel</button>
+              <button className="primary" onClick={handleExecuteSkill} disabled={!canRun}>
+                Run Skill
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
   </div>;
 }
 
