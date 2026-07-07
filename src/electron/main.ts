@@ -719,6 +719,165 @@ function defaultSkills(): LunaSkill[] {
   ];
 }
 
+const allowedSkillCategories = ['study', 'invoice', 'meeting', 'research', 'job', 'generic'] as const;
+const allowedSkillTools = ['read_input', 'local_inference', 'structured_extract', 'export_markdown', 'export_pdf', 'export_csv', 'export_json', 'export_ics', 'export_zip'] as const;
+const allowedInputTypes = ['file', 'folder', 'text', 'demo'] as const;
+const allowedOutputTypes = ['pdf', 'docx', 'md', 'html', 'zip', 'json', 'csv', 'ics'] as const;
+
+function slugify(text: string) {
+  return String(text || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+function looksLikeUnsupportedLiveExternalRequest(description: string): boolean {
+  const text = String(description || '').toLowerCase();
+  const hasLocalInputCue = /(from my|from the|from this|provided|uploaded|attached|local|document|transcript|file|folder|resume|invoice|meeting|notes|source)/i.test(text);
+  const hasExternalDataCue = /(netflix|streaming|catalog|shows|movies|price|prices|inventory|stock|weather|news|sports|event|events|schedule|schedules|live|real-time|current|latest|up-to-date|today|tonight|now|online|web|internet|available)/i.test(text);
+  const asksForCurrentInfo = /(current|latest|up-to-date|live|real-time|today|tonight|now|available|catalog|what's on|what is on)/i.test(text);
+  const isLocalContentTask = /(summarize|summary|analyze|extract|organize|transform|convert|rewrite|compare|notes|transcript|resume|invoice|meeting|document|file|folder)/i.test(text);
+  return hasExternalDataCue && !hasLocalInputCue && (asksForCurrentInfo || /(?:netflix|streaming|catalog|shows|movies|price|prices|inventory|stock|weather|news|events|schedule)/i.test(text)) && !isLocalContentTask;
+}
+
+function buildSkillArtifactPath(skillDir: string, stem: string, ext: string) {
+  return path.join(skillDir, `${slugify(stem)}.${ext.replace(/^\./, '')}`);
+}
+
+async function resolveSkillInput(skill: LunaSkill) {
+  const preferred = skill.inputs?.find(i => ['file', 'folder', 'text', 'demo'].includes(i.type)) || skill.inputs?.[0];
+  if (!preferred) return { sourceType: 'text' as const, text: skill.description };
+  if (preferred.type === 'text') return { sourceType: 'text' as const, text: preferred.description || skill.description };
+  if (preferred.type === 'demo') {
+    const fallback = skill.category === 'invoice' ? path.join(docsRoot(), 'Invoice_Demo_Electronics.txt') : skill.category === 'meeting' ? path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt') : skill.category === 'job' ? path.join(docsRoot(), 'Demo_User_Resume.txt') : path.join(docsRoot(), 'Research_Local_AI_Privacy.md');
+    return { sourceType: 'file' as const, path: fallback, name: path.basename(fallback) };
+  }
+  if (preferred.type === 'folder') {
+    const folderPath = path.join(docsRoot(), 'documents');
+    const entries = fssync.existsSync(folderPath) ? fssync.readdirSync(folderPath).filter(x => !x.startsWith('.')) : [];
+    if (entries.length) return { sourceType: 'file' as const, path: path.join(folderPath, entries[0]), name: entries[0] };
+  }
+  try {
+    const attachments = await readAttachments().catch(() => ({ items: [] as AttachmentItem[], updatedAt: '' }));
+    const match = attachments.items.find(item => {
+      const accepted = preferred.accept?.map(ext => ext.toLowerCase());
+      if (!accepted?.length) return true;
+      const itemExt = path.extname(item.name).toLowerCase();
+      return accepted.some(ext => ext === itemExt || ext === `.${itemExt}`);
+    });
+    if (match?.storedPath) return { sourceType: 'file' as const, path: match.storedPath, name: match.name };
+  } catch {}
+  const fallbackPath = skill.category === 'invoice' ? path.join(docsRoot(), 'Invoice_Demo_Electronics.txt') : skill.category === 'meeting' ? path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt') : skill.category === 'job' ? path.join(docsRoot(), 'Demo_User_Resume.txt') : path.join(docsRoot(), 'Research_Local_AI_Privacy.md');
+  return { sourceType: 'file' as const, path: fallbackPath, name: path.basename(fallbackPath) };
+}
+
+async function playSkillTool(tool: string, step: LunaSkill['steps'][number], context: any, skill: LunaSkill, skillDir: string) {
+  const executor = (skillToolRegistry as Record<string, (step: LunaSkill['steps'][number], context: any, skill: LunaSkill, skillDir: string) => Promise<any>>)[tool];
+  if (!executor) throw new Error(`Unsupported skill tool: ${tool}`);
+  return executor(step, context, skill, skillDir);
+}
+
+const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], context: any, skill: LunaSkill, skillDir: string) => Promise<any>> = {
+  async read_input(_step, context, skill) {
+    const resolved = await resolveSkillInput(skill);
+    let text = '';
+    if (resolved.sourceType === 'text') text = resolved.text || skill.description;
+    else if (resolved.path) text = await readDocumentAny(resolved.path);
+    else text = skill.description;
+    context.inputPath = resolved.path;
+    context.inputText = text;
+    context.currentText = text;
+    context.currentJson = null;
+    return { text };
+  },
+  async local_inference(step, context, skill) {
+    const prompt = [
+      `Skill: ${skill.name}`,
+      `Skill description: ${skill.description}`,
+      `Step: ${step.label}`,
+      `Step detail: ${step.detail}`,
+      `Context from earlier steps:\n${context.currentText || context.inputText || 'No prior context.'}`
+    ].join('\n\n');
+    const ai = await chat([{ role: 'user', content: prompt }]);
+    context.currentText = ai.text;
+    context.currentJson = null;
+    return { text: ai.text };
+  },
+  async structured_extract(step, context) {
+    const source = context.currentText || context.inputText || '';
+    const prompt = [
+      'Extract structured JSON from the provided text.',
+      'Return valid JSON only.',
+      `Schema hint: ${step.detail}`,
+      `Source text:\n${source}`
+    ].join('\n\n');
+    const ai = await chat([{ role: 'user', content: prompt }]);
+    const parsed = extractJsonObject(ai.text);
+    const payload = parsed && typeof parsed === 'object' ? parsed : { extracted: source.slice(0, 4000) };
+    context.currentJson = payload;
+    context.currentText = JSON.stringify(payload, null, 2);
+    return { json: payload, text: context.currentText };
+  },
+  async export_markdown(_step, context, skill, skillDir) {
+    const content = `# ${skill.name}\n\n${context.currentJson ? JSON.stringify(context.currentJson, null, 2) : context.currentText || ''}\n`;
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_summary`, 'md');
+    await ensureDir(path.dirname(filePath));
+    await writeText(filePath, content);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_pdf(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_report`, 'pdf');
+    const body = context.currentJson ? JSON.stringify(context.currentJson, null, 2) : context.currentText || '';
+    await generatePdf(filePath, skill.name, [{ heading: 'Generated skill output', body }, { heading: 'Privacy', body: 'Generated locally by Luna skill runner.' }]);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_csv(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_data`, 'csv');
+    let content = '';
+    if (context.currentJson && typeof context.currentJson === 'object' && !Array.isArray(context.currentJson)) {
+      const rows = Object.entries(context.currentJson).map(([k, v]) => `${csvEscape(k)},${csvEscape(String(v))}`).join('\n');
+      content = `field,value\n${rows}`;
+    } else if (Array.isArray(context.currentJson)) {
+      const headers = Object.keys(context.currentJson[0] || {}).filter(Boolean);
+      content = [headers.join(','), ...context.currentJson.map((row: any) => headers.map(h => csvEscape(String(row?.[h] ?? ''))).join(','))].join('\n');
+    } else {
+      content = `content\n${csvEscape(context.currentText || '')}`;
+    }
+    await ensureDir(path.dirname(filePath));
+    await writeText(filePath, content);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_json(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_payload`, 'json');
+    const payload = context.currentJson ?? { text: context.currentText || '', skillName: skill.name };
+    await ensureDir(path.dirname(filePath));
+    await writeText(filePath, JSON.stringify(payload, null, 2));
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_ics(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_reminder`, 'ics');
+    const content = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Luna//Skill Runner//EN\nBEGIN:VEVENT\nUID:${Date.now()}@local\nDTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')}\nSUMMARY:${skill.name}\nDESCRIPTION:${String(context.currentText || context.currentJson ? JSON.stringify(context.currentJson || {}) : '').replace(/\n/g, ' ')}\nEND:VEVENT\nEND:VCALENDAR\n`;
+    await ensureDir(path.dirname(filePath));
+    await writeText(filePath, content);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_zip(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_package`, 'zip');
+    const sources = context.artifactPaths.filter(Boolean);
+    if (sources.length) await zipFiles(filePath, sources);
+    else {
+      const tempMd = buildSkillArtifactPath(skillDir, `${skill.name}_snapshot`, 'md');
+      await writeText(tempMd, context.currentText || '');
+      await zipFiles(filePath, [tempMd]);
+      context.artifactPaths.push(tempMd);
+    }
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  }
+};
+
 function inferSkillCategory(description: string): LunaSkill['category'] {
   const d = description.toLowerCase();
   if (d.includes('invoice') || d.includes('expense') || d.includes('receipt')) return 'invoice';
@@ -729,43 +888,117 @@ function inferSkillCategory(description: string): LunaSkill['category'] {
   return 'generic';
 }
 
+function sanitizeSkillCategory(value: unknown, fallback: LunaSkill['category']): LunaSkill['category'] {
+  const raw = typeof value === 'string' ? value.toLowerCase() : '';
+  return allowedSkillCategories.includes(raw as typeof allowedSkillCategories[number]) ? raw as LunaSkill['category'] : fallback;
+}
+
+function sanitizeSkillInputType(value: unknown): LunaSkill['inputs'][number]['type'] {
+  const raw = typeof value === 'string' ? value.toLowerCase() : '';
+  return allowedInputTypes.includes(raw as typeof allowedInputTypes[number]) ? raw as LunaSkill['inputs'][number]['type'] : 'text';
+}
+
+function sanitizeSkillTool(value: unknown): string {
+  const raw = typeof value === 'string' ? value : '';
+  return allowedSkillTools.includes(raw as typeof allowedSkillTools[number]) ? raw : 'summarize';
+}
+
+function sanitizeSkillOutputType(value: unknown): LunaSkill['outputs'][number]['type'] {
+  const raw = typeof value === 'string' ? value.toLowerCase() : '';
+  return allowedOutputTypes.includes(raw as typeof allowedOutputTypes[number]) ? raw as LunaSkill['outputs'][number]['type'] : 'md';
+}
+
+function extractJsonObject(raw: string): any {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    try { return JSON.parse(fenced[1]); } catch {}
+  }
+  try { return JSON.parse(trimmed); } catch {}
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(trimmed.slice(start, end + 1)); } catch {}
+  }
+  return null;
+}
+
+function buildGeneratedSkillFromPayload(payload: any, description: string, categoryHint: LunaSkill['category']): LunaSkill | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : titleFromDescription(description, categoryHint);
+  const category = sanitizeSkillCategory(payload.category, categoryHint);
+  const inputs = Array.isArray(payload.inputs) ? payload.inputs.filter(Boolean).slice(0, 4).map((input: any, index: number) => ({
+    name: typeof input?.name === 'string' && input.name.trim() ? input.name.trim() : `input_${index + 1}`,
+    type: sanitizeSkillInputType(input?.type),
+    accept: Array.isArray(input?.accept) ? input.accept.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0).slice(0, 6) : undefined,
+    description: typeof input?.description === 'string' && input.description.trim() ? input.description.trim() : 'Local input for this skill'
+  })) : [];
+  const permissions = Array.isArray(payload.permissions) ? payload.permissions.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0).slice(0, 6) : [];
+  const steps = Array.isArray(payload.steps) ? payload.steps.filter(Boolean).slice(0, 6).map((step: any, index: number) => ({
+    tool: sanitizeSkillTool(step?.tool),
+    label: typeof step?.label === 'string' && step.label.trim() ? step.label.trim() : `Step ${index + 1}`,
+    detail: typeof step?.detail === 'string' && step.detail.trim() ? step.detail.trim() : 'Perform the requested local refinement safely.'
+  })) : [];
+  const outputs = Array.isArray(payload.outputs) ? payload.outputs.filter(Boolean).slice(0, 4).map((output: any, index: number) => ({
+    name: typeof output?.name === 'string' && output.name.trim() ? output.name.trim() : `output_${index + 1}`,
+    type: sanitizeSkillOutputType(output?.type)
+  })) : [];
+  if (!steps.length || !outputs.length) return null;
+  return {
+    id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}_${Date.now()}`,
+    name,
+    description: typeof payload.description === 'string' && payload.description.trim() ? payload.description.trim() : description,
+    category,
+    inputs: inputs.length ? inputs : [{ name: 'input', type: 'text', description: 'Primary input for this skill' }],
+    permissions: permissions.length ? permissions : ['Read selected/local demo files', 'Run local model or transparent fallback', 'Write artifacts to Luna workspace', 'Create privacy trace'],
+    steps,
+    outputs,
+    createdAt: new Date().toISOString()
+  };
+}
+
 function makeSkill(id: string, name: string, description: string, category: LunaSkill['category'], createdAt = new Date().toISOString()): LunaSkill {
   const commonPermissions = ['Read selected/local demo files', 'Run local model or transparent fallback', 'Write artifacts to Luna workspace', 'Create privacy trace'];
   const base = { id, name, description, category, createdAt, permissions: commonPermissions };
   if (category === 'invoice') return { ...base,
     inputs: [{ name: 'invoice', type: 'file', accept: ['.pdf', '.png', '.jpg', '.txt'], description: 'Invoice document or image' }],
     steps: [
-      { tool: 'extract_text', label: 'Extract invoice text', detail: 'Read PDF/TXT or OCR image content locally.' },
-      { tool: 'llm_extract_json', label: 'Extract structured fields', detail: 'Vendor, date, total, tax and line items.' },
-      { tool: 'export_csv_json_pdf', label: 'Export finance package', detail: 'Create JSON, CSV and PDF summary.' }
+      { tool: 'read_input', label: 'Read invoice input', detail: 'Read the invoice document or image and extract the available text locally.' },
+      { tool: 'structured_extract', label: 'Extract invoice fields', detail: 'Return JSON with vendor, invoiceNumber, date, total, tax, and lineItems.' },
+      { tool: 'export_json', label: 'Export invoice JSON', detail: 'Save the extracted invoice data as JSON.' },
+      { tool: 'export_csv', label: 'Export invoice CSV', detail: 'Save the extracted invoice rows as CSV.' },
+      { tool: 'export_pdf', label: 'Export invoice PDF', detail: 'Generate a PDF summary of the extracted invoice data.' }
     ],
     outputs: [{ name: 'invoice_data.json', type: 'json' }, { name: 'invoice_items.csv', type: 'csv' }, { name: 'invoice_report.pdf', type: 'pdf' }]
   };
   if (category === 'meeting') return { ...base,
     inputs: [{ name: 'transcript', type: 'file', accept: ['.txt', '.md'], description: 'Meeting transcript or pasted notes' }],
     steps: [
-      { tool: 'extract_text', label: 'Read transcript', detail: 'Load transcript from local file.' },
-      { tool: 'summarize_decisions', label: 'Find decisions and risks', detail: 'Create structured summary.' },
-      { tool: 'extract_action_items', label: 'Extract action items', detail: 'Owner, deadline and follow-up reminders.' },
-      { tool: 'export_followups', label: 'Export follow-ups', detail: 'Create Markdown summary and ICS reminders.' }
+      { tool: 'read_input', label: 'Read transcript', detail: 'Load the transcript from local storage.' },
+      { tool: 'local_inference', label: 'Summarize meeting', detail: 'Produce decisions, risks and concrete follow-up actions from the transcript.' },
+      { tool: 'export_markdown', label: 'Export summary', detail: 'Write the meeting summary to Markdown.' },
+      { tool: 'export_ics', label: 'Export reminders', detail: 'Write reminder events based on the generated follow-up summary.' }
     ],
-    outputs: [{ name: 'meeting_summary.md', type: 'md' }, { name: 'follow_up_email.md', type: 'md' }, { name: 'reminders.ics', type: 'ics' }]
+    outputs: [{ name: 'meeting_summary.md', type: 'md' }, { name: 'reminders.ics', type: 'ics' }]
   };
   if (category === 'job') return { ...base,
     inputs: [{ name: 'resume', type: 'file', accept: ['.pdf', '.docx', '.txt'], description: 'Resume' }, { name: 'jobDescription', type: 'text', description: 'Job description text' }],
     steps: [
-      { tool: 'compare_documents', label: 'Compare fit', detail: 'Match resume evidence to role requirements.' },
-      { tool: 'generate_cover_letter', label: 'Draft cover letter', detail: 'Tailor output to the role.' },
-      { tool: 'export_application_pack', label: 'Export package', detail: 'Create report, letter and ZIP.' }
+      { tool: 'read_input', label: 'Read resume', detail: 'Read the resume document and supporting job description.' },
+      { tool: 'local_inference', label: 'Compare fit', detail: 'Draft a fit analysis and tailored cover letter for the role.' },
+      { tool: 'export_markdown', label: 'Export analysis', detail: 'Write the match analysis to Markdown.' },
+      { tool: 'export_pdf', label: 'Export application pack', detail: 'Create a PDF brief for the application package.' }
     ],
-    outputs: [{ name: 'match_report.pdf', type: 'pdf' }, { name: 'cover_letter.docx', type: 'docx' }, { name: 'application_pack.zip', type: 'zip' }]
+    outputs: [{ name: 'match_report.pdf', type: 'pdf' }, { name: 'cover_letter.md', type: 'md' }]
   };
   return { ...base,
     inputs: [{ name: 'document', type: 'file', accept: ['.pdf', '.docx', '.txt', '.md'], description: 'Source document' }],
     steps: [
-      { tool: 'extract_text', label: 'Extract content', detail: 'Read the selected document locally.' },
-      { tool: 'summarize', label: 'Generate structured insight', detail: 'Summarize, extract key ideas and create useful next steps.' },
-      { tool: 'export_artifacts', label: 'Export artifacts', detail: 'Save Markdown and PDF outputs locally.' }
+      { tool: 'read_input', label: 'Read document', detail: 'Read the selected document locally.' },
+      { tool: 'local_inference', label: 'Generate insight', detail: 'Summarize the document into structured notes and useful next steps.' },
+      { tool: 'export_markdown', label: 'Export summary', detail: 'Save a Markdown summary locally.' },
+      { tool: 'export_pdf', label: 'Export report', detail: 'Save a PDF report locally.' }
     ],
     outputs: [{ name: 'summary.md', type: 'md' }, { name: 'report.pdf', type: 'pdf' }]
   };
@@ -785,7 +1018,58 @@ function titleFromDescription(description: string, category: LunaSkill['category
 async function generateSkill(description: string): Promise<LunaSkill> {
   const category = inferSkillCategory(description);
   const name = titleFromDescription(description, category);
-  const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}_${Date.now()}`;
+  if (looksLikeUnsupportedLiveExternalRequest(description)) {
+    return {
+      id: `${slugify(name)}_${Date.now()}`,
+      name: 'Unsupported request',
+      description,
+      category,
+      inputs: [],
+      permissions: ['Read selected/local demo files'],
+      steps: [],
+      outputs: [],
+      createdAt: new Date().toISOString(),
+      unsupported: true,
+      unsupportedReason: 'This request depends on live or external data that Luna cannot access locally, so it cannot be executed accurately.'
+    };
+  }
+  const basePrompt = [
+    'You are generating a structured skill for a private local AI desktop assistant.',
+    'Return JSON only, no markdown, matching this schema:',
+    '{"id":"string","name":"string","description":"string","category":"study|invoice|meeting|research|job|generic","inputs":[{"name":"string","type":"file|folder|text|demo","accept":["string"],"description":"string"}],"permissions":["string"],"steps":[{"tool":"string","label":"string","detail":"string"}],"outputs":[{"name":"string","type":"pdf|docx|md|html|zip|json|csv|ics"}],"createdAt":"string"}',
+    'Allowed tools: read_input, local_inference, structured_extract, export_markdown, export_pdf, export_csv, export_json, export_ics, export_zip.',
+    'Allowed input types: file, folder, text, demo.',
+    'Allowed output types: pdf, docx, md, html, zip, json, csv, ics.',
+    'If the request requires internet access, external accounts, third-party app control, or live/external data that Luna cannot access locally, return {"unsupported":true,"reason":"..."} instead of inventing a fake skill.',
+    'Do not generate skills that pretend to know current catalogs, prices, inventory, weather, news, schedules, or other time-sensitive facts without a real local data source.',
+    'The skill must reflect the user request, stay within local safe desktop automation, and never invent arbitrary code execution tools.',
+    `User request: ${description}`
+  ].join('\n');
+  const prompts = [basePrompt, `${basePrompt}\nIMPORTANT: Only use the allowed tool names above. If any tool is outside that set, reject the draft and return an unsupported response.`];
+  for (const prompt of prompts) {
+    try {
+      const res = await chat([{ role: 'system', content: 'You create structured local desktop workflow skills. Return valid JSON only.' }, { role: 'user', content: prompt }]);
+      const payload = extractJsonObject(res.text);
+      if (payload?.unsupported) {
+        return {
+          id: `${slugify(name)}_${Date.now()}`,
+          name: 'Unsupported request',
+          description,
+          category,
+          inputs: [],
+          permissions: ['Read selected/local demo files'],
+          steps: [],
+          outputs: [],
+          createdAt: new Date().toISOString(),
+          unsupported: true,
+          unsupportedReason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason.trim() : 'This request requires capabilities that Luna cannot provide locally.'
+        };
+      }
+      const generated = buildGeneratedSkillFromPayload(payload, description, category);
+      if (generated) return generated;
+    } catch {}
+  }
+  const id = `${slugify(name)}_${Date.now()}`;
   return makeSkill(id, name, description, category);
 }
 
@@ -810,6 +1094,15 @@ async function saveSkill(skill: LunaSkill): Promise<{ ok: boolean; skills: LunaS
   return { ok: true, skills: next };
 }
 
+async function deleteSkill(skillId: string): Promise<{ ok: boolean; skills: LunaSkill[] }> {
+  const skills = await listSkills();
+  const next = skills.filter(skill => skill.id !== skillId);
+  await writeText(skillsPath(), JSON.stringify(next, null, 2));
+  getDb().prepare('DELETE FROM skills WHERE id = ?').run(skillId);
+  await logAudit('skill', 'delete_skill', skillId, `Deleted skill ${skillId} locally.`, 'low');
+  return { ok: true, skills: next };
+}
+
 function csvEscape(x: string) { return `"${String(x).replace(/"/g, '""')}"`; }
 
 async function runSkill(skillId: string): Promise<SkillRunResult> {
@@ -822,34 +1115,31 @@ async function runSkill(skillId: string): Promise<SkillRunResult> {
   const artifacts: Artifact[] = [];
   const addArtifact = (name: string, p: string, type: Artifact['type']) => artifacts.push({ name, path: p, type });
 
-  if (skill.category === 'invoice') {
-    const src = path.join(docsRoot(), 'Invoice_Demo_Electronics.txt');
-    const text = await readText(src); privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read invoice source for structured extraction.' }); trace.push({ time: now(), title: 'Read invoice', detail: 'Loaded local invoice text.' });
-    const data = { vendor: 'Demo Electronics Store', invoiceNo: 'DEMO-2026-071', date: '2026-07-03', subtotal: 2499, tax: 0, total: 2499, items: [ { description: 'USB-C Hub', qty: 1, price: 1799 }, { description: 'HDMI Cable', qty: 1, price: 700 } ], sourcePreview: text.slice(0, 120) };
-    const jsonPath = path.join(skillDir, 'invoice_data.json'); await writeText(jsonPath, JSON.stringify(data, null, 2)); addArtifact('invoice_data.json', jsonPath, 'json');
-    const csvPath = path.join(skillDir, 'invoice_items.csv'); await writeText(csvPath, ['description,qty,price', ...data.items.map(i => [csvEscape(i.description), i.qty, i.price].join(','))].join('\n')); addArtifact('invoice_items.csv', csvPath, 'csv');
-    const pdfPath = path.join(skillDir, 'invoice_report.pdf'); await generatePdf(pdfPath, 'Invoice Extraction Report', [ { heading: 'Extracted Invoice', body: `Vendor: ${data.vendor}\nInvoice: ${data.invoiceNo}\nDate: ${data.date}\nTotal: INR ${data.total}` }, { heading: 'Line Items', body: data.items.map(i => `${i.description} — Qty ${i.qty} — INR ${i.price}`).join('\n') }, { heading: 'Privacy', body: 'Processed locally from seeded demo invoice. No external request required.' } ]); addArtifact('invoice_report.pdf', pdfPath, 'pdf');
-    trace.push({ time: now(), title: 'Exported finance package', detail: 'Created JSON, CSV and PDF outputs.' });
-  } else if (skill.category === 'meeting') {
-    const src = path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt');
-    const text = await readText(src); privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read meeting transcript.' }); trace.push({ time: now(), title: 'Read transcript', detail: 'Loaded local meeting notes.' });
-    const summary = `# Meeting Summary\n\n## Decisions\n- Main demo focuses on offline proof, job mission, file automation undo, and Luna Skill Creator.\n\n## Action Items\n- Demo lead: polish PDF and DOCX exports by Friday.\n- Teammate: test Windows packaging tomorrow and prepare fallback instructions.\n\n## Risks\n- Live demo failure.\n- Privacy claims must be proven, not just stated.\n\n## Source Excerpt\n${text.slice(0, 500)}`;
-    const mdPath = path.join(skillDir, 'meeting_summary.md'); await writeText(mdPath, summary); addArtifact('meeting_summary.md', mdPath, 'md');
-    const emailPath = path.join(skillDir, 'follow_up_email.md'); await writeText(emailPath, `Subject: Luna demo follow-up\n\nHi team,\n\nDecisions: focus the main demo on offline proof, job mission, reversible automation, and Luna Skill Creator.\n\nActions:\n- Demo lead: polish PDF/DOCX exports by Friday.\n- Teammate: test Windows packaging tomorrow.\n\nThanks.`); addArtifact('follow_up_email.md', emailPath, 'md');
-    const icsPath = path.join(skillDir, 'reminders.ics'); await writeText(icsPath, `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Luna//Local Reminder//EN\nBEGIN:VEVENT\nUID:luna-${Date.now()}@local\nDTSTAMP:20260704T090000Z\nDTSTART:20260705T090000Z\nSUMMARY:Test Luna Windows packaging\nDESCRIPTION:Generated locally by Luna Meeting Notes Processor\nEND:VEVENT\nEND:VCALENDAR\n`); addArtifact('reminders.ics', icsPath, 'ics');
-    trace.push({ time: now(), title: 'Generated follow-ups', detail: 'Created summary, follow-up email and ICS reminder.' });
-  } else {
-    const src = path.join(docsRoot(), 'Research_Local_AI_Privacy.md');
-    const text = await readText(src); privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read research document for skill run.' }); trace.push({ time: now(), title: 'Read research document', detail: 'Loaded seeded local AI privacy research note.' });
-    const prompt = `Create a study pack with summary, flashcards and quiz from this document:\n${text}`;
-    const ai = await chat([{ role: 'user', content: prompt }]);
-    privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `Generated skill output via ${ai.mode}.` });
-    const mdPath = path.join(skillDir, 'study_pack.md'); await writeText(mdPath, `# Study Pack\n\n${ai.text}\n\n## Flashcards\n- Q: What is the main privacy benefit of local AI?\n  A: Less data leaves the device.\n- Q: Why are audit logs important?\n  A: They make assistant actions inspectable and reversible.\n\n## Quiz\n1. Name two risks of local AI assistants.\n2. What does a zero-network counter prove?`); addArtifact('study_pack.md', mdPath, 'md');
-    const csvPath = path.join(skillDir, 'flashcards.csv'); await writeText(csvPath, `question,answer\n${csvEscape('What is the main privacy benefit of local AI?')},${csvEscape('Less data leaves the device.')}\n${csvEscape('Why are audit logs important?')},${csvEscape('They make assistant actions inspectable and reversible.')}`); addArtifact('flashcards.csv', csvPath, 'csv');
-    const pdfPath = path.join(skillDir, 'study_pack.pdf'); await generatePdf(pdfPath, 'Local AI Privacy Study Pack', [ { heading: 'Summary', body: ai.text }, { heading: 'Flashcards', body: 'Q: What is the main privacy benefit of local AI?\nA: Less data leaves the device.\n\nQ: Why are audit logs important?\nA: They make assistant actions inspectable and reversible.' }, { heading: 'Privacy', body: 'Generated from a local seeded research document.' } ]); addArtifact('study_pack.pdf', pdfPath, 'pdf');
-    trace.push({ time: now(), title: 'Generated study pack', detail: 'Created Markdown, CSV flashcards and PDF report.' });
+  if (skill.unsupported) {
+    trace.push({ time: now(), title: 'Unsupported skill', detail: skill.unsupportedReason || 'This skill is not executable locally.' });
+    privacy.push({ time: now(), action: 'skill_refusal', target: skill.name, detail: skill.unsupportedReason || 'Skill generation refused unsupported request.' });
+    await logAudit('skill', 'run_skill', skill.name, 'Skipped unsupported skill execution.', 'low');
+    return { skill, artifacts, trace, privacy };
   }
-  privacy.push({ time: now(), action: 'write_artifacts', target: skillDir, detail: `Saved ${artifacts.length} skill artifacts locally.` });
+
+  const context: any = { artifactPaths: [] as string[] };
+  for (const step of skill.steps || []) {
+    trace.push({ time: now(), title: step.label, detail: step.detail });
+    const result = await playSkillTool(step.tool, step, context, skill, skillDir);
+    if (result?.path) {
+      const artifactName = path.basename(result.path);
+      addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type']);
+    }
+    if (result?.text) context.currentText = result.text;
+    if (result?.json !== undefined) context.currentJson = result.json;
+    privacy.push({ time: now(), action: step.tool, target: skill.name, detail: `Executed skill step: ${step.label}` });
+  }
+  if (artifacts.length) {
+    privacy.push({ time: now(), action: 'write_artifacts', target: skillDir, detail: `Saved ${artifacts.length} skill artifacts locally.` });
+  } else {
+    trace.push({ time: now(), title: 'No artifacts produced', detail: 'The skill completed, but no local artifact files were written.' });
+    privacy.push({ time: now(), action: 'skill_no_artifacts', target: skill.name, detail: 'No skill artifacts were produced by this run.' });
+  }
   await logAudit('skill', 'run_skill', skill.name, `Ran skill and generated ${artifacts.length} artifact(s).`, 'low');
   return { skill, artifacts, trace, privacy };
 }
@@ -1383,7 +1673,7 @@ async function trySearchFiles(command: string): Promise<CommandRouteResult | nul
   return { intent: 'file_search', confidence: 0.9, summary: `Found ${matches.length} file(s) matching "${query}":\n${list}`, actionTaken: `Searched for: ${query}`, extra: matches };
 }
 type LastFileAction = { type: 'delete' | 'move' | 'rename'; from: string; to: string; label: string };
-let lastFileAction: LastFileAction | null = null;
+let fileActionHistory: LastFileAction[] = [];
 function lunaTrashDir() { return path.join(app.getPath('userData'), 'luna-trash'); }
 async function softTrash(filePath: string): Promise<string> {
   await fs.mkdir(lunaTrashDir(), { recursive: true });
@@ -1392,16 +1682,36 @@ async function softTrash(filePath: string): Promise<string> {
   return dest;
 }
 async function undoLastFileAction(): Promise<{ ok: boolean; message: string }> {
-  if (!lastFileAction) return { ok: false, message: 'There is no recent file action to undo.' };
-  const { from, to, label } = lastFileAction;
+  const action = fileActionHistory.pop();
+  if (!action) return { ok: false, message: 'There is no recent file action to undo.' };
+  const { from, to, label } = action;
   try {
     await fs.rename(to, from);
-    await logAudit('automation', 'file_action_undo', from, `Reversed previous action ("${label}"), restoring "${from}".`, 'low');
-    lastFileAction = null;
-    return { ok: true, message: `Undid it — restored "${path.basename(from)}".` };
+    await logAudit('automation', 'file_action_undo', from, `Reversed previous action ("${label}"), restoring "${from}". ${fileActionHistory.length} earlier action(s) remain undoable.`, 'low');
+    const remaining = fileActionHistory.length;
+    return { ok: true, message: `Undid it — restored "${path.basename(from)}".${remaining > 0 ? ` You have ${remaining} earlier action${remaining === 1 ? '' : 's'} you can still undo one at a time, or say "restore everything" to reverse all of them.` : ''}` };
   } catch (e: any) {
+    fileActionHistory.push(action);
     return { ok: false, message: `Couldn't undo: ${e?.message || e}` };
   }
+}
+async function restoreAllFileActions(): Promise<{ ok: boolean; message: string }> {
+  if (fileActionHistory.length === 0) return { ok: false, message: 'There is nothing tracked to restore — no file actions since Luna started.' };
+  const total = fileActionHistory.length;
+  let restored = 0;
+  const failures: string[] = [];
+  while (fileActionHistory.length > 0) {
+    const action = fileActionHistory.pop()!;
+    try {
+      await fs.rename(action.to, action.from);
+      restored++;
+    } catch (e: any) {
+      failures.push(`${path.basename(action.from)}: ${e?.message || e}`);
+    }
+  }
+  await logAudit('automation', 'file_action_restore_all', lunaTrashDir(), `Restored ${restored} of ${total} tracked file action(s) in one bulk undo.`, 'low');
+  const failureNote = failures.length ? ` ${failures.length} couldn't be restored: ${failures.join('; ')}.` : '';
+  return { ok: failures.length === 0, message: `Restored ${restored} of ${total} recent file action(s) back to their original state.${failureNote}` };
 }
 async function tryDeleteFile(command: string): Promise<CommandRouteResult | null> {
   const c = command.toLowerCase();
@@ -1422,13 +1732,18 @@ async function tryDeleteFile(command: string): Promise<CommandRouteResult | null
   const target = matches[0];
   try {
     const trashedPath = await softTrash(target);
-    lastFileAction = { type: 'delete', from: target, to: trashedPath, label: `deleted ${path.basename(target)}` };
+    fileActionHistory.push({ type: 'delete', from: target, to: trashedPath, label: `deleted ${path.basename(target)}` });
     await logAudit('automation', 'file_delete', target, `Moved "${target}" to Luna's local trash folder (not permanently deleted). No confirmation was required because this is reversible — say "undo" to restore it.`, 'medium');
     return { intent: 'file_delete', confidence: 0.9, summary: `Moved "${path.basename(target)}" to Luna's trash. Say "undo" any time to restore it.`, actionTaken: `Trashed file: ${target}` };
   } catch (e: any) {
     await logAudit('automation', 'file_delete_failed', target, e?.message || String(e), 'medium');
     return { intent: 'file_delete', confidence: 0.8, summary: `I found "${path.basename(target)}" but couldn't delete it: ${e?.message || e}.`, actionTaken: `Attempted delete: ${target}` };
   }
+}
+async function tryRestoreAll(command: string): Promise<CommandRouteResult | null> {
+  if (!/\b(restore everything|undo everything|undo all|restore all)\b/i.test(command)) return null;
+  const result = await restoreAllFileActions();
+  return { intent: 'file_restore_all', confidence: 0.9, summary: result.message, actionTaken: result.ok ? 'Restored all tracked file actions' : 'Bulk restore incomplete or nothing to restore' };
 }
 async function tryUndoFileAction(command: string): Promise<CommandRouteResult | null> {
   if (!/\bundo\b/i.test(command)) return null;
@@ -1456,7 +1771,7 @@ async function tryMoveOrRename(command: string): Promise<CommandRouteResult | nu
       const newName = path.basename(destQuery.trim());
       const dest = path.join(path.dirname(source), newName);
       await fs.rename(source, dest);
-      lastFileAction = { type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` };
+      fileActionHistory.push({ type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` });
       await logAudit('automation', 'file_rename', source, `Renamed "${source}" to "${newName}". Say "undo" to reverse it.`, 'low');
       return { intent: 'file_rename', confidence: 0.9, summary: `Renamed "${path.basename(source)}" to "${newName}". Say "undo" to reverse it.`, actionTaken: `Renamed file to: ${newName}` };
     } else {
@@ -1465,7 +1780,7 @@ async function tryMoveOrRename(command: string): Promise<CommandRouteResult | nu
       const destDir = app.getPath(KNOWN_FOLDERS[folderKey]);
       const dest = path.join(destDir, path.basename(source));
       try { await fs.rename(source, dest); } catch { await fs.copyFile(source, dest); await fs.unlink(source); }
-      lastFileAction = { type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` };
+      fileActionHistory.push({ type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` });
       await logAudit('automation', 'file_move', source, `Moved "${source}" to "${dest}". Say "undo" to reverse it.`, 'low');
       return { intent: 'file_move', confidence: 0.9, summary: `Moved "${path.basename(source)}" to your ${folderKey} folder. Say "undo" to reverse it.`, actionTaken: `Moved file to: ${folderKey}` };
     }
@@ -1503,6 +1818,8 @@ async function tryLaunchApp(command: string): Promise<CommandRouteResult | null>
   return { intent: 'app_launch', confidence: 0.9, summary: `I tried to open ${matchKey} but it failed: ${result.error}. It may not be installed, or may need a different launch command on this system.`, actionTaken: `Attempted to launch: ${matchKey}` };
 }
 async function routeCommand(command: string): Promise<CommandRouteResult> {
+  const restoreAll = await tryRestoreAll(command);
+  if (restoreAll) return restoreAll;
   const undo = await tryUndoFileAction(command);
   if (undo) return undo;
   const moveOrRename = await tryMoveOrRename(command);
@@ -1671,7 +1988,6 @@ async function openMainCommandPalette() {
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] || char));
 }
-
 async function renderOrbWindowHtml() {
   const settings = await getSettings();
   const assistantName = escapeHtml(settings.assistantName || 'Luna');
@@ -1687,13 +2003,11 @@ async function renderOrbWindowHtml() {
     @keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 30px rgba(139,92,246,.75),0 18px 50px rgba(0,0,0,.5)}50%{transform:scale(1.05);box-shadow:0 0 48px rgba(6,182,212,.75),0 18px 50px rgba(0,0,0,.5)}}
   </style></head><body><div class="wrap"><button id="orb" title="Open ${assistantName}"><svg width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 2.3 8.7 8.1 3 9.3l5.7 1.2 1.2 5.7 1.2-5.7 5.7-1.2-5.7-1.2-1.2-5.8Z"/><path d="M19 13l-.7 3.1-3.1.7 3.1.7.7 3.1.7-3.1 3.1-.7-3.1-.7L19 13Z"/></svg></button></div><script>document.getElementById('orb').addEventListener('click',()=>window.luna.openMainCommandPalette());</script></body></html>`;
 }
-
 async function refreshOrbWindow() {
   if (!orbWindow || orbWindow.isDestroyed()) return;
   const html = await renderOrbWindowHtml();
   await orbWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
 }
-
 async function createOrbWindow() {
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.workAreaSize;
@@ -1737,6 +2051,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('studio:research-presentation', runResearchMission);
   ipcMain.handle('skill:generate', (_e, description: string) => generateSkill(description));
   ipcMain.handle('skill:save', (_e, skill: LunaSkill) => saveSkill(skill));
+  ipcMain.handle('skills:delete', (_e, skillId: string) => deleteSkill(skillId));
   ipcMain.handle('skill:list', listSkills);
   ipcMain.handle('skill:run', (_e, skillId: string) => runSkill(skillId));
   ipcMain.handle('vault:index-demo', indexDemoVault);

@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('luna', {
   getResources: () => ipcRenderer.invoke('resources:get'),
   generateSkill: (description: string) => ipcRenderer.invoke('skill:generate', description),
   saveSkill: (skill: unknown) => ipcRenderer.invoke('skill:save', skill),
+  deleteSkill: (skillId: string) => ipcRenderer.invoke('skills:delete', skillId),
   listSkills: () => ipcRenderer.invoke('skill:list'),
   runSkill: (skillId: string) => ipcRenderer.invoke('skill:run', skillId),
   vaultIndexDemo: () => ipcRenderer.invoke('vault:index-demo'),

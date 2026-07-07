@@ -75,7 +75,7 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
     { id: 'studio', title: 'Research-to-Presentation', status: 'ready', detail: 'Generate PPTX, PDF, HTML, speaker notes and ZIP.' },
     { id: 'vault', title: 'Knowledge Vault Q&A', status: 'ready', detail: 'Index local documents and answer with evidence.' },
     { id: 'automation', title: 'Safe automation with undo', status: 'ready', detail: 'Preview file cleanup, execute, then undo entire mission.' },
-    { id: 'skills', title: 'Luna Skill Creator', status: 'ready', detail: 'Generate and run reusable local skills.' },
+    { id: 'skills', title: 'Skill Creator', status: 'ready', detail: 'Generate and run reusable local skills.' },
     { id: 'memory', title: 'Personal memory and adaptive context', status: 'ready', detail: 'Show remembered goals/preferences and context construction.' }
   ]);
   const [artifacts, setArtifacts] = useState<any[]>([]);
@@ -118,7 +118,7 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
       const saved = await window.luna.saveSkill(skill);
       const runSkill = await window.luna.runSkill(saved.skills[0].id); addArtifacts(runSkill.artifacts);
       update('skills', { status: 'done', detail: `Generated/saved skill and created ${runSkill.artifacts.length} artifacts.` });
-      pushLog('Showcase: Luna Skill Creator complete');
+      pushLog('Showcase: Skill Creator complete');
 
       update('memory', { status: 'running', detail: 'Building adaptive context from memory and vault…' });
       const ctx = await window.luna.contextBuild('What is Luna trying to become for this hackathon?');
@@ -163,7 +163,7 @@ function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; a
     { title: 'Missions', tab: 'missionhub' as Tab, items: ['Job Application Mission', 'Research-to-Presentation', 'Meeting Notes', 'Invoice / Expense', 'Study Pack', 'Codebase Explainer', 'Attachment Summary'] },
     { title: 'Safe Automation', tab: 'automation' as Tab, items: ['file cleanup planner', 'before/after preview', 'permission approval', 'manifest logging', 'full undo', 'mission replay'] },
     { title: 'Privacy & Reliability', tab: 'trust' as Tab, items: ['external network counter', 'resource meter', 'audit log', 'SQLite database status', 'trust export', 'delete/reset data', 'fallback drill', 'preflight + IPC checks'] },
-    { title: 'Extensibility', tab: 'skills' as Tab, items: ['Luna Skill Creator', 'plain-English skill generation', 'safe schema-based tools', 'saved local skills', 'executable built-in skills', 'mission templates'] }
+    { title: 'Extensibility', tab: 'skills' as Tab, items: ['Skill Creator', 'plain-English skill generation', 'safe schema-based tools', 'saved local skills', 'executable built-in skills', 'mission templates'] }
   ];
   return <div className="grid two">
     <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}> 
@@ -213,7 +213,7 @@ function CommandCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void;
         <div><b>1. Privacy proof</b><span>Network counter and resource meter stay visible.</span></div>
         <div><b>2. Job mission</b><span>Resume + JD → report, cover letter, ZIP.</span></div>
         <div><b>3. Safe automation</b><span>Preview file moves, approve, then full undo.</span></div>
-        <div><b>4. Luna Skill Creator</b><span>Create new local skills from controlled templates.</span></div>
+        <div><b>4. Skill Creator</b><span>Create new local skills from controlled templates.</span></div>
       </div>
       <p className="hint">All demo data is seeded locally and resettable, so repeated judging starts clean.</p>
     </Card>
@@ -637,27 +637,33 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
   useEffect(() => { refresh(); }, []);
   const generate = async () => { setBusy('Generating skill…'); const skill = await window.luna.generateSkill(desc); setGenerated(skill); setBusy(''); };
   const save = async () => { if (!generated) return; setBusy('Saving skill…'); const res = await window.luna.saveSkill(generated); setSkills(res.skills); setBusy(''); };
+  const remove = async (id: string) => { setBusy('Deleting skill…'); const res = await window.luna.deleteSkill(id); setSkills(res.skills); setBusy(''); };
   const run = async (id: string) => { setBusy('Running skill locally…'); const res = await window.luna.runSkill(id); setRunResult(res); setBusy(''); };
   return <div className="grid two">
-    <Card title="Luna Skill Creator" icon={<Wand2 size={18}/>}> 
+    <Card title="Skill Creator" icon={<Wand2 size={18}/>}> 
       <p className="hint">Create reusable {assistantName} skills from plain English. Skills use safe built-in tools, permissions and export formats — not arbitrary unsafe code.</p>
       <textarea value={desc} onChange={e=>setDesc(e.target.value)} />
       <div className="row-actions"><button className="primary" onClick={generate} disabled={!!busy}>Generate skill</button>{generated && <button onClick={save} disabled={!!busy}>Save reusable skill</button>}</div>
       {busy && <p className="hint">{busy}</p>}
       {generated && <div className="generated-box">
-        <h3>{generated.name}</h3>
-        <p>{generated.description}</p>
-        <div className="skill-section"><b>Inputs</b>{generated.inputs.map((x:any)=><span key={x.name}>{x.name}: {x.description}</span>)}</div>
-        <div className="skill-section"><b>Steps</b>{generated.steps.map((x:any,i:number)=><span key={x.label}>{i+1}. {x.label} — {x.detail}</span>)}</div>
-        <div className="skill-section"><b>Permissions</b>{generated.permissions.map((x:string)=><span key={x}>{x}</span>)}</div>
-        <div className="skill-section"><b>Outputs</b>{generated.outputs.map((x:any)=><span key={x.name}>{x.name}</span>)}</div>
+        {generated.unsupported ? <><h3>Unsupported request</h3><p>{generated.unsupportedReason || 'This request needs capabilities that Luna cannot provide locally.'}</p></> : <>
+          <h3>{generated.name}</h3>
+          <p>{generated.description}</p>
+          <div className="skill-section"><b>Inputs</b>{generated.inputs.map((x:any)=><span key={x.name}>{x.name}: {x.description}</span>)}</div>
+          <div className="skill-section"><b>Steps</b>{generated.steps.map((x:any,i:number)=><span key={x.label}>{i+1}. {x.label} — {x.detail}</span>)}</div>
+          <div className="skill-section"><b>Permissions</b>{generated.permissions.map((x:string)=><span key={x}>{x}</span>)}</div>
+          <div className="skill-section"><b>Outputs</b>{generated.outputs.map((x:any)=><span key={x.name}>{x.name}</span>)}</div>
+        </>}
       </div>}
     </Card>
     <Card title="Saved Skills" icon={<Sparkles size={18}/>}> 
       <div className="skills-list">
         {skills.map(skill => <div className="skill-card" key={skill.id}>
           <div><b>{skill.name}</b><span>{skill.description}</span><small>{skill.category} · {skill.outputs.length} outputs · {skill.permissions.length} permissions</small></div>
-          <button onClick={()=>run(skill.id)} disabled={!!busy}>Run</button>
+          <div className="skill-card-actions">
+            <button onClick={()=>run(skill.id)} disabled={!!busy}>Run</button>
+            <button className="secondary" onClick={()=>remove(skill.id)} disabled={!!busy}>Delete</button>
+          </div>
         </div>)}
       </div>
       {!skills.length && <p className="hint">No saved skills yet. Generate and save one.</p>}
@@ -668,8 +674,8 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
         {runResult.artifacts.map((a:any) => <div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}
       </div>
       <div className="split-panels">
-        <div><h4>Run trace</h4>{runResult.trace.map((t:any,i:number)=><div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}</div>
-        <div><h4>Privacy trace</h4>{runResult.privacy.map((p:any,i:number)=><div className="privacy-row compact" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}</div>
+        <div><h4>Run trace</h4>{runResult.trace.map((t:any,i:number)=><div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}{!runResult.trace.length && <p className="hint">No run trace events were recorded.</p>}</div>
+        <div><h4>Privacy trace</h4>{runResult.privacy.map((p:any,i:number)=><div className="privacy-row compact" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}{!runResult.privacy.length && <p className="hint">No privacy events were recorded.</p>}</div>
       </div>
     </Card>}
   </div>;
@@ -789,7 +795,7 @@ function App() {
     <button className={tab==='trust'?'active':''} onClick={()=>setTab('trust')}>Trust Center</button>
     <button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}>Settings</button>
     <button className={tab==='help'?'active':''} onClick={()=>setTab('help')}>Help</button>
-    <button className={tab==='skills'?'active':''} onClick={()=>setTab('skills')}>Luna Skill Creator</button>
+    <button className={tab==='skills'?'active':''} onClick={()=>setTab('skills')}>Skill Creator</button>
     <div className="mini-log"><b>Activity</b>{log.map(x=><span key={x}>{x}</span>)}</div>
   </aside><main>
     {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='command' && <CommandCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}

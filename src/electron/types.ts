@@ -60,6 +60,8 @@ export type LunaSkill = {
   steps: { tool: string; label: string; detail: string }[];
   outputs: { name: string; type: 'pdf' | 'docx' | 'md' | 'html' | 'zip' | 'json' | 'csv' | 'ics' | 'csv' | 'ics' }[];
   createdAt: string;
+  unsupported?: boolean;
+  unsupportedReason?: string;
 };
 
 export type SkillRunResult = {
