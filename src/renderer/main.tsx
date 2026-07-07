@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, Archive, Bot, CheckCircle2, FileText, Gauge, Network, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Wand2, WifiOff } from 'lucide-react';
 import './styles.css';
 
-type Tab = 'showcase' | 'capabilities' | 'command' | 'voice' | 'attachments' | 'missionhub' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'trust' | 'settings' | 'help' | 'skills';
+type Tab = 'showcase' | 'capabilities' | 'chat' | 'voice' | 'attachments' | 'missionhub' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'trust' | 'settings' | 'help' | 'skills';
 type Msg = { role: 'user' | 'assistant'; content: string; meta?: string };
 
 function Badge({ children, tone='neutral' }: { children: React.ReactNode; tone?: 'neutral'|'good'|'warn'|'bad'|'purple' }) {
@@ -156,8 +156,8 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
 
 function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assistantName: string }) {
   const groups = [
-    { title: 'Local AI Core', tab: 'command' as Tab, items: ['Ollama chat', 'transparent fallback mode', 'Chat+ adaptive context', 'model preference', 'response style control', 'conversation compression foundation'] },
-    { title: 'Desktop Companion Layer', tab: 'command' as Tab, items: [`always-on-top ${assistantName} Orb`, 'global command palette', 'Ctrl/Cmd + Shift + L shortcut', 'natural-language command router', 'voice/transcript commands'] },
+    { title: 'Local AI Core', tab: 'chat' as Tab, items: ['Ollama chat', 'transparent fallback mode', 'Chat+ adaptive context', 'model preference', 'response style control', 'conversation compression foundation'] },
+    { title: 'Desktop Companion Layer', tab: 'chat' as Tab, items: [`always-on-top ${assistantName} Orb`, 'global command palette', 'Ctrl/Cmd + Shift + L shortcut', 'natural-language command router', 'voice/transcript commands'] },
     { title: 'Knowledge & Memory', tab: 'vault' as Tab, items: ['Knowledge Vault', 'PDF/DOCX/TXT/MD/CSV/JSON import', 'embedding retrieval when available', 'keyword fallback', 'evidence cards', 'reviewable personal memory', 'adaptive context builder'] },
     { title: 'Artifacts & Attachments', tab: 'attachments' as Tab, items: ['unified attachments', 'local OCR for images', 'PDF export', 'DOCX export', 'PPTX export', 'HTML export', 'Markdown export', 'CSV/JSON/ICS/ZIP export'] },
     { title: 'Missions', tab: 'missionhub' as Tab, items: ['Job Application Mission', 'Research-to-Presentation', 'Meeting Notes', 'Invoice / Expense', 'Study Pack', 'Codebase Explainer', 'Attachment Summary'] },
@@ -183,45 +183,137 @@ function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; a
   </div>;
 }
 
-function CommandCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
-  const [messages, setMessages] = useState<Msg[]>([{ role: 'assistant', content: `Hi, I’m ${assistantName}. I can run with local Ollama or fallback demo mode, analyze local documents, generate artifacts, and organize files with undo.` }]);
-  const [input, setInput] = useState(`What can ${assistantName} do while staying local?`);
-  const [busy, setBusy] = useState(false);
-  const [actionCommand, setActionCommand] = useState('Create a presentation from my local research notes');
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionResult, setActionResult] = useState<any>(null);
-  const send = async () => {
-    if (!input.trim()) return;
-    const next = [...messages, { role: 'user' as const, content: input }];
-    setMessages(next); setInput(''); setBusy(true);
-    const started = performance.now();
-    const res = await window.luna.chatPlus(next.map(m => ({ role: m.role, content: m.content })));
-    const ms = Math.round(performance.now() - started);
-    setMessages([...next, { role: 'assistant', content: res.text, meta: `${res.mode} · ${res.model} · ${res.tokensPerSecond ?? '?'} tok/s · ${ms}ms · memories ${res.context?.memories?.length ?? 0} · evidence ${res.context?.vault?.length ?? 0}` }]);
-    setBusy(false); pushLog(`Chat response via ${res.mode}`);
+function ChatCenter({ pushLog, assistantName }: { pushLog: (s: string) => void; assistantName: string }) {
+  type ChatMsg = { role: 'user' | 'assistant'; content: string; meta?: string };
+  type Session = { id: string; title: string; created_at: string; updated_at: string };
+
+  const [sessions, setSessions] = React.useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
+  const [messages, setMessages] = React.useState<ChatMsg[]>([]);
+  const [input, setInput] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [loadingSession, setLoadingSession] = React.useState(false);
+  const chatboxRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (chatboxRef.current) chatboxRef.current.scrollTop = chatboxRef.current.scrollHeight;
+  }, [messages, busy]);
+
+  useEffect(() => { loadSessions(); }, []);
+
+  const loadSessions = async () => {
+    const list = await window.luna.chatListSessions();
+    setSessions(list);
+    return list;
   };
-  return <div className="grid two">
-    <Card title={`Ask ${assistantName}`} icon={<Bot size={18}/>}> 
-      <div className="chatbox">
-        {messages.map((m, i) => <div key={i} className={`msg ${m.role}`}><div>{m.content}</div>{m.meta && <small>{m.meta}</small>}</div>)}
-        {busy && <div className="msg assistant typing">Thinking locally…</div>}
+
+  const switchToSession = async (sessionId: string) => {
+    setLoadingSession(true);
+    setActiveSessionId(sessionId);
+    const rows = await window.luna.chatGetMessages(sessionId);
+    setMessages(rows.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content, meta: r.meta ?? undefined })));
+    setLoadingSession(false);
+  };
+
+  const newChat = async () => {
+    const id = await window.luna.chatCreateSession();
+    const greeting: ChatMsg = { role: 'assistant', content: `Hi, I'm ${assistantName}. How can I help?` };
+    await window.luna.chatAppendMessage(id, 'assistant', greeting.content, null);
+    setActiveSessionId(id);
+    setMessages([greeting]);
+    setInput('');
+    await loadSessions();
+    pushLog('New chat session started');
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    await window.luna.chatDeleteSession(sessionId);
+    const updated = await loadSessions();
+    if (activeSessionId === sessionId) {
+      if (updated.length > 0) { await switchToSession(updated[0].id); }
+      else { setActiveSessionId(null); setMessages([]); }
+    }
+    pushLog('Chat session deleted');
+  };
+
+  const send = async () => {
+    if (!input.trim() || busy) return;
+    let sessionId = activeSessionId;
+    if (!sessionId) {
+      sessionId = await window.luna.chatCreateSession();
+      setActiveSessionId(sessionId);
+    }
+    const userContent = input.trim();
+    const isFirstUserMessage = messages.filter(m => m.role === 'user').length === 0;
+    const userMsg: ChatMsg = { role: 'user', content: userContent };
+    const next = [...messages, userMsg];
+    setMessages(next);
+    setInput('');
+    setBusy(true);
+    await window.luna.chatAppendMessage(sessionId, 'user', userContent, null);
+    const started = performance.now();
+    try {
+      const res = await window.luna.chatPlus(next.map(m => ({ role: m.role, content: m.content })));
+      const ms = Math.round(performance.now() - started);
+      const metaStr = `${res.mode} · ${res.model} · ${res.tokensPerSecond ?? '?'} tok/s · ${ms}ms · memories ${res.context?.memories?.length ?? 0} · evidence ${res.context?.vault?.length ?? 0}`;
+      const assistantMsg: ChatMsg = { role: 'assistant', content: res.text, meta: metaStr };
+      setMessages([...next, assistantMsg]);
+      await window.luna.chatAppendMessage(sessionId, 'assistant', res.text, metaStr);
+      pushLog(`Chat response via ${res.mode}`);
+      if (isFirstUserMessage) { await window.luna.chatRenameSession(sessionId, userContent); await loadSessions(); }
+    } catch (e: any) {
+      const errMsg: ChatMsg = { role: 'assistant', content: `Error: ${e?.message || String(e)}` };
+      setMessages([...next, errMsg]);
+      await window.luna.chatAppendMessage(sessionId, 'assistant', errMsg.content, null);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="chat-center-layout">
+      <div className="chat-sessions-panel">
+        <div className="chat-sessions-header">
+          <span>Chats</span>
+          <button className="primary" style={{ fontSize: '12px', padding: '4px 10px' }} onClick={newChat}>+ New</button>
+        </div>
+        <div className="chat-sessions-list">
+          {sessions.length === 0 && <div className="chat-sessions-empty">No chats yet.</div>}
+          {sessions.map(s => (
+            <div key={s.id} className={`chat-session-item${s.id === activeSessionId ? ' active' : ''}`} onClick={() => switchToSession(s.id)}>
+              <span className="chat-session-title">{s.title || 'New chat'}</span>
+              <span className="chat-session-date">{new Date(s.updated_at).toLocaleDateString()}</span>
+              <button className="tiny chat-session-delete" title="Delete" onClick={e => { e.stopPropagation(); deleteSession(s.id); }}>&#x2715;</button>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className="composer"><input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') send(); }} /><button onClick={send} disabled={busy}>Send</button></div>
-    </Card>
-    <Card title="Judge-proof showcase" icon={<Sparkles size={18}/>}> 
-      <div className="showcase-list">
-        <div><b>1. Privacy proof</b><span>Network counter and resource meter stay visible.</span></div>
-        <div><b>2. Job mission</b><span>Resume + JD → report, cover letter, ZIP.</span></div>
-        <div><b>3. Safe automation</b><span>Preview file moves, approve, then full undo.</span></div>
-        <div><b>4. Skill Creator</b><span>Create new local skills from controlled templates.</span></div>
+      <div className="chat-main-area">
+        {!activeSessionId ? (
+          <div className="chat-empty-state">
+            <p>Select a chat or start a new one.</p>
+            <button className="primary" onClick={newChat}>Start chat</button>
+          </div>
+        ) : (
+          <Card title={`Ask ${assistantName}`} icon={<Bot size={18} />}>
+            {loadingSession
+              ? <div className="msg assistant typing">Loading...</div>
+              : <div className="chatbox" ref={chatboxRef}>
+                  {messages.map((m, i) => (
+                    <div key={i} className={`msg ${m.role}`}><div>{m.content}</div>{m.meta && <small>{m.meta}</small>}</div>
+                  ))}
+                  {busy && <div className="msg assistant typing">Thinking locally...</div>}
+                </div>
+            }
+            <div className="composer">
+              <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') send(); }} placeholder={`Message ${assistantName}...`} />
+              <button onClick={send} disabled={busy || !input.trim()}>Send</button>
+            </div>
+          </Card>
+        )}
       </div>
-      <p className="hint">All demo data is seeded locally and resettable, so repeated judging starts clean.</p>
-    </Card>
-  </div>;
+    </div>
+  );
 }
-
-
-
 function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [supported, setSupported] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -233,6 +325,7 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
   const [speakBack, setSpeakBack] = useState(true);
   const [speaking, setSpeaking] = useState(false);
   const [routing, setRouting] = useState(false);
+  const [pendingClarification, setPendingClarification] = useState<{ intent: 'delete'|'rename'; candidates: {path:string;name:string}[]; newName?: string } | null>(null);
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
@@ -295,7 +388,12 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
   const run = async (cmd = transcript) => {
     if (!cmd.trim()) return;
     setRouting(true);
-    const res = await window.luna.routeCommand(cmd);
+    const res = pendingClarification
+      ? await window.luna.routeCommandWithContext(cmd, pendingClarification)
+      : await window.luna.routeCommand(cmd);
+    // Update pending clarification slot
+    const nextPending = res.extra?.pendingClarification ?? null;
+    setPendingClarification(nextPending);
     setResult(res); pushLog(`Voice routed: ${res.intent}`);
     setRouting(false);
     setSpeaking(true);
@@ -502,24 +600,111 @@ function MemoryCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; 
 }
 
 function Automation({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
-  const [plan, setPlan] = useState<any>(null); const [done, setDone] = useState<any>(null); const [undo, setUndo] = useState<any>(null);
-  const makePlan = async () => { setDone(null); setUndo(null); setPlan(await window.luna.planCleanup()); pushLog('Cleanup plan generated'); };
-  const execute = async () => { const r = await window.luna.executeCleanup(plan); setDone(r); pushLog('Cleanup executed with manifest'); };
-  const undoIt = async () => { const r = await window.luna.undoMission(done.missionId); setUndo(r); pushLog('Cleanup undone'); };
+  type UndoEntry = { missionId: string; type: 'delete'|'rename'|'move'|'cleanup'; description: string; createdAt: string };
+  const [plan, setPlan] = useState<any>(null);
+  const [done, setDone] = useState<any>(null);
+  const [history, setHistory] = useState<UndoEntry[]>([]);
+  const [busy, setBusy] = useState('');
+  const [restoreResult, setRestoreResult] = useState<string | null>(null);
+
+  const refreshHistory = async () => {
+    const list = await window.luna.listUndoableActions();
+    setHistory(list);
+  };
+
+  useEffect(() => { refreshHistory(); }, []);
+
+  const makePlan = async () => {
+    setDone(null); setRestoreResult(null);
+    setPlan(await window.luna.planCleanup());
+    pushLog('Cleanup plan generated');
+  };
+
+  const execute = async () => {
+    const r = await window.luna.executeCleanup(plan);
+    setDone(r);
+    await refreshHistory();
+    pushLog('Cleanup executed with manifest');
+  };
+
+  const undoOne = async (missionId: string) => {
+    setBusy(missionId);
+    try {
+      await window.luna.undoMission(missionId);
+      await refreshHistory();
+      pushLog(`Undid action ${missionId}`);
+    } catch (e: any) {
+      setRestoreResult(`Failed: ${e?.message || String(e)}`);
+    }
+    setBusy('');
+  };
+
+  const undoAll = async () => {
+    setBusy('all');
+    const r = await window.luna.undoAllPending();
+    setRestoreResult(r.message);
+    await refreshHistory();
+    pushLog(r.ok ? 'Restored all actions' : 'Restore all failed partway');
+    setBusy('');
+  };
+
+  const relativeTime = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} hr ago`;
+    return `${Math.floor(hrs / 24)} day ago`;
+  };
+
+  const typeIcon = (type: UndoEntry['type']) => {
+    if (type === 'delete') return '🗑';
+    if (type === 'rename') return '✏️';
+    if (type === 'move') return '📂';
+    return '📦';
+  };
+
   return <div className="grid two">
-    <Card title="Computer Cleanup with Preview" icon={<Archive size={18}/>}> 
-      <button className="primary" onClick={makePlan}>Analyze demo Downloads</button>
-      {plan && <><div className="risk"><Badge tone="good">Risk: {plan.risk}</Badge><Badge tone="purple">Undo manifest will be created</Badge></div><div className="moves">{plan.moves.map((m:any,i:number)=><div key={i}><b>{m.from.split(/[\\/]/).pop()}</b><span>→ {m.to.split(/[\\/]/).slice(-2).join('/')}</span><small>{m.reason}</small></div>)}</div><button onClick={execute} disabled={!!done}>Approve and run</button></>}
+    <Card title="Computer Cleanup with Preview" icon={<Archive size={18}/>}>
+      <button className="primary" onClick={makePlan} disabled={!!busy}>Analyze demo Downloads</button>
+      {plan && <>
+        <div className="risk"><Badge tone="good">Risk: {plan.risk}</Badge><Badge tone="purple">Undo manifest will be created</Badge></div>
+        <div className="moves">{plan.moves.map((m:any,i:number)=><div key={i}><b>{m.from.split(/[\\/]/).pop()}</b><span>&#8594; {m.to.split(/[\\/]/).slice(-2).join('/')}</span><small>{m.reason}</small></div>)}</div>
+        <button onClick={execute} disabled={!!done || !!busy}>Approve and run</button>
+      </>}
+      {done && <div className="success"><CheckCircle2 size={16}/> Moved {done.moved} files. Manifest saved. <button onClick={()=>window.luna.revealPath(done.manifestPath)}>Reveal manifest</button></div>}
     </Card>
-    <Card title="Undo proof" icon={<RotateCcw size={18}/>}> 
-      {!done && <p className="hint">After execution, {assistantName} can revert the entire mission in one click.</p>}
-      {done && <div className="success"><CheckCircle2/> Moved {done.moved} files. Manifest saved.<button onClick={()=>window.luna.revealPath(done.manifestPath)}>Reveal manifest</button><button className="danger" onClick={undoIt} disabled={!!undo}>Undo entire mission</button></div>}
-      {undo && <div className="success"><RotateCcw/> Restored {undo.restored} files to original paths.</div>}
+
+    <Card title="Undo History" icon={<RotateCcw size={18}/>}>
+      {history.length === 0
+        ? <p className="hint">No undoable actions yet. Delete, move, rename, or run a cleanup to see entries here.</p>
+        : <>
+            <div className="row-actions" style={{marginBottom:'10px'}}>
+              <button className="danger" onClick={undoAll} disabled={!!busy}>{busy==='all' ? 'Restoring...' : 'Restore everything'}</button>
+            </div>
+            <div className="undo-history-list">
+              {history.map(entry => (
+                <div key={entry.missionId} className="undo-history-item">
+                  <span className="undo-type-icon">{typeIcon(entry.type)}</span>
+                  <div className="undo-details">
+                    <span className="undo-description">{entry.description}</span>
+                    <span className="undo-time">{relativeTime(entry.createdAt)}</span>
+                  </div>
+                  <button
+                    className="secondary"
+                    onClick={() => undoOne(entry.missionId)}
+                    disabled={!!busy}
+                  >{busy === entry.missionId ? 'Undoing...' : 'Undo'}</button>
+                </div>
+              ))}
+            </div>
+          </>
+      }
+      {restoreResult && <p className="hint" style={{marginTop:'10px'}}>{restoreResult}</p>}
     </Card>
   </div>;
 }
-
-
 function Trust({ health, assistantName }: any) {
   const [audit, setAudit] = useState<any[]>([]);
   const [dbStatus, setDbStatus] = useState<any>(null);
@@ -846,26 +1031,31 @@ function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boole
   const [cmd, setCmd] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [pendingClarification, setPendingClarification] = useState<{ intent: 'delete'|'rename'; candidates: {path:string;name:string}[]; newName?: string } | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
-  useEffect(() => { if (open) { setTimeout(()=>inputRef.current?.focus(), 50); setResult(null); } }, [open]);
+  useEffect(() => { if (open) { setTimeout(()=>inputRef.current?.focus(), 50); setResult(null); setPendingClarification(null); } }, [open]);
   if (!open) return null;
   const run = async (value = cmd) => {
     if (!value.trim()) return;
     setBusy(true); setResult(null);
-    const res = await window.luna.routeCommand(value);
+    const res = pendingClarification
+      ? await window.luna.routeCommandWithContext(value, pendingClarification)
+      : await window.luna.routeCommand(value);
+    const nextPending = res.extra?.pendingClarification ?? null;
+    setPendingClarification(nextPending);
     setResult(res); setBusy(false); pushLog(`Palette routed: ${res.intent}`);
   };
   const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Organize my demo Downloads safely', 'Run the codebase explainer mission', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
   return <div className="palette-backdrop" onMouseDown={onClose}>
     <div className="palette" onMouseDown={e=>e.stopPropagation()}>
       <div className="palette-head"><div><b>Luna Command Palette</b><span>Ctrl/Cmd + Shift + L</span></div><button className="ghost" onClick={onClose}>Close</button></div>
-      <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder={`Tell ${assistantName} what to do…`} onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
+      {pendingClarification && <div className="palette-clarification"><Badge tone="warn">Waiting for clarification</Badge><span>Reply with a number, "the first one", or part of the filename to pick one — or type a new command to cancel.</span></div>}
+      <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder={pendingClarification ? `Which one? (e.g. "the first one", "the resume one")` : `Tell ${assistantName} what to do…`} onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
       <div className="palette-suggestions">{suggestions.map(s=><button key={s} onClick={()=>{setCmd(s); run(s);}} disabled={busy}>{s}</button>)}</div>
       {result && <div className="palette-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">{Math.round(result.confidence*100)}% confidence</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
     </div>
   </div>;
 }
-
 function Onboarding({ settings, onSave }: { settings: any; onSave: (s: any)=>void }) {
   const [form, setForm] = useState<any>(settings || {});
   useEffect(() => setForm(settings || {}), [settings]);
@@ -943,7 +1133,7 @@ function App() {
   return <div className={`app theme-${settings?.theme || 'midnight'} accent-${settings?.accent || 'purple'}`}><Header health={health} onReset={reset} settings={settings}/><aside className="sidebar">
     <button className={tab==='showcase'?'active':''} onClick={()=>setTab('showcase')}>Guided Demo</button>
     <button className={tab==='capabilities'?'active':''} onClick={()=>setTab('capabilities')}>Capabilities</button>
-    <button className={tab==='command'?'active':''} onClick={()=>setTab('command')}>Command</button>
+    <button className={tab==='chat'?'active':''} onClick={()=>setTab('chat')}>Chat</button>
     <button className={tab==='voice'?'active':''} onClick={()=>setTab('voice')}>Voice</button>
     <button className={tab==='attachments'?'active':''} onClick={()=>setTab('attachments')}>Attachments</button>
     <button className={tab==='missionhub'?'active':''} onClick={()=>setTab('missionhub')}>Mission Hub</button>
@@ -958,7 +1148,7 @@ function App() {
     <button className={tab==='skills'?'active':''} onClick={()=>setTab('skills')}>Skill Creator</button>
     <div className="mini-log"><b>Activity</b>{log.map(x=><span key={x}>{x}</span>)}</div>
   </aside><main>
-    {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='command' && <CommandCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
+    {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='chat' && <ChatCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
   </main><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog} assistantName={assistantName}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
 }
 

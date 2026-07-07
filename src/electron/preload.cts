@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('luna', {
   planCleanup: () => ipcRenderer.invoke('automation:plan-cleanup'),
   executeCleanup: (plan: unknown) => ipcRenderer.invoke('automation:execute-cleanup', plan),
   undoMission: (missionId: string) => ipcRenderer.invoke('automation:undo', missionId),
+  listUndoableActions: () => ipcRenderer.invoke('automation:list-undoable'),
+  undoAllPending: () => ipcRenderer.invoke('automation:undo-all'),
+  restoreFromTrash: (missionId: string) => ipcRenderer.invoke('automation:restore-from-trash', missionId),
   revealPath: (path: string) => ipcRenderer.invoke('shell:reveal', path),
   getNetworkLog: () => ipcRenderer.invoke('network:log'),
   getResources: () => ipcRenderer.invoke('resources:get'),
@@ -41,6 +44,7 @@ contextBridge.exposeInMainWorld('luna', {
   lensImportImage: () => ipcRenderer.invoke('lens:import-image'),
   lensExplain: (snapshot: unknown) => ipcRenderer.invoke('lens:explain', snapshot),
   routeCommand: (command: string) => ipcRenderer.invoke('command:route', command),
+  routeCommandWithContext: (command: string, pending: unknown) => ipcRenderer.invoke('command:route-with-context', command, pending),
   openMainCommandPalette: () => ipcRenderer.invoke('ui:open-command-palette'),
   auditList: () => ipcRenderer.invoke('audit:list'),
   trustExport: () => ipcRenderer.invoke('trust:export'),
@@ -57,5 +61,11 @@ contextBridge.exposeInMainWorld('luna', {
     const listener = () => callback();
     ipcRenderer.on('shortcut:command-palette', listener);
     return () => ipcRenderer.removeListener('shortcut:command-palette', listener);
-  }
+  },
+  chatListSessions: () => ipcRenderer.invoke('chat:list-sessions'),
+  chatCreateSession: () => ipcRenderer.invoke('chat:create-session'),
+  chatGetMessages: (sessionId: string) => ipcRenderer.invoke('chat:get-messages', sessionId),
+  chatAppendMessage: (sessionId: string, role: string, content: string, meta?: string | null) => ipcRenderer.invoke('chat:append-message', sessionId, role, content, meta ?? null),
+  chatRenameSession: (sessionId: string, firstUserMessage: string) => ipcRenderer.invoke('chat:rename-session', sessionId, firstUserMessage),
+  chatDeleteSession: (sessionId: string) => ipcRenderer.invoke('chat:delete-session', sessionId),
 });

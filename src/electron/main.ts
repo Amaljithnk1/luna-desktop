@@ -113,6 +113,22 @@ function getDb() {
       );
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT);
       CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, name TEXT, path TEXT, type TEXT, created_at TEXT);
+      CREATE TABLE IF NOT EXISTS chat_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        role TEXT,
+        content TEXT,
+        meta TEXT,
+        created_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
     `);
   }
   return db;
@@ -126,7 +142,7 @@ function resetDb() {
 }
 async function databaseStatus(): Promise<DatabaseStatus> {
   const database = getDb();
-  const tableNames = ['audit_events','memories','vault_docs','vault_chunks','skills','settings','artifacts'];
+  const tableNames = ['audit_events','memories','vault_docs','vault_chunks','skills','settings','artifacts','chat_sessions','chat_messages'];
   const tables = tableNames.map(name => ({ name, rows: Number(database.prepare(`SELECT COUNT(*) as c FROM ${name}`).get().c) }));
   let sizeBytes = 0; try { sizeBytes = fssync.statSync(databasePath()).size; } catch {}
   return { path: databasePath(), ok: true, tables, sizeBytes };
@@ -1440,6 +1456,28 @@ async function executeCleanup(plan: FilePlan): Promise<AutomationResult> {
 async function undoMission(missionId: string) {
   const manifestPath = path.join(manifestsRoot(), `${missionId}.json`);
   const manifest = JSON.parse(await readText(manifestPath));
+
+  // Single-file delete manifest
+  if (manifest.type === 'delete') {
+    await ensureDir(path.dirname(manifest.originalPath));
+    await fs.rename(manifest.trashedPath, manifest.originalPath);
+    await fs.unlink(manifestPath).catch(() => {});
+    await logAudit('automation', 'undo_delete', manifest.originalPath, `Restored "${manifest.originalPath}" from Luna trash.`, 'low');
+    return { ok: true, restored: 1, manifestPath };
+  }
+
+  // Single-file rename/move manifest
+  if (manifest.type === 'rename' || manifest.type === 'move') {
+    if (await exists(manifest.to)) {
+      await ensureDir(path.dirname(manifest.from));
+      await fs.rename(manifest.to, manifest.from);
+    }
+    await fs.unlink(manifestPath).catch(() => {});
+    await logAudit('automation', `undo_${manifest.type}`, manifest.from, `Reversed ${manifest.type} of "${manifest.from}".`, 'low');
+    return { ok: true, restored: 1, manifestPath };
+  }
+
+  // Bulk cleanup manifest (original format — moves array + creates array)
   let restored = 0;
   for (const m of [...manifest.moves].reverse()) {
     if (await exists(m.to)) {
@@ -1449,7 +1487,7 @@ async function undoMission(missionId: string) {
       restored++;
     }
   }
-  for (const dir of [...manifest.creates].sort((a, b) => b.length - a.length)) {
+  for (const dir of [...(manifest.creates || [])].sort((a: string, b: string) => b.length - a.length)) {
     try { await fs.rmdir(dir); } catch { /* keep non-empty dirs */ }
   }
   await logAudit('automation', 'undo_cleanup', manifestPath, `Restored ${restored} files from manifest.`, 'low');
@@ -1457,6 +1495,54 @@ async function undoMission(missionId: string) {
 }
 
 
+
+export type UndoableAction = {
+  missionId: string;
+  type: 'delete' | 'rename' | 'move' | 'cleanup';
+  description: string;
+  createdAt: string;
+};
+
+async function listUndoableActions(): Promise<UndoableAction[]> {
+  await ensureDir(manifestsRoot());
+  let files: string[] = [];
+  try { files = (await fs.readdir(manifestsRoot())).filter(f => f.endsWith('.json')); } catch { return []; }
+  const actions: UndoableAction[] = [];
+  for (const file of files) {
+    try {
+      const raw = JSON.parse(await readText(path.join(manifestsRoot(), file)));
+      const type: UndoableAction['type'] =
+        raw.type === 'delete' ? 'delete' :
+        raw.type === 'rename' ? 'rename' :
+        raw.type === 'move'   ? 'move'   : 'cleanup';
+      const description = raw.description ||
+        (raw.moves ? `Moved ${raw.moves.length} file(s) (cleanup)` : raw.missionId);
+      actions.push({ missionId: raw.missionId, type, description, createdAt: raw.createdAt });
+    } catch { /* skip malformed */ }
+  }
+  return actions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+async function undoAllPending(): Promise<{ ok: boolean; undone: number; failed: number; message: string }> {
+  const actions = await listUndoableActions();
+  if (!actions.length) return { ok: true, undone: 0, failed: 0, message: 'Nothing to restore — no undo history found.' };
+  let undone = 0;
+  for (const action of actions) {
+    try {
+      await undoMission(action.missionId);
+      undone++;
+    } catch (e: any) {
+      await logAudit('automation', 'undo_all_failed', action.missionId, e?.message || String(e), 'medium');
+      return { ok: false, undone, failed: actions.length - undone, message: `Restored ${undone} action(s), then failed on "${action.description}": ${e?.message || String(e)}. Stopped to avoid partial state.` };
+    }
+  }
+  await logAudit('automation', 'undo_all_pending', manifestsRoot(), `Reversed all ${undone} pending action(s).`, 'low');
+  return { ok: true, undone, failed: 0, message: `Restored all ${undone} action(s) successfully.` };
+}
+
+async function restoreFromTrash(missionId: string) {
+  return undoMission(missionId);
+}
 
 async function getActiveWindowSafe(): Promise<LensSnapshot['activeWindow']> {
   try {
@@ -1746,14 +1832,125 @@ async function trySearchFiles(command: string): Promise<CommandRouteResult | nul
   return { intent: 'file_search', confidence: 0.9, summary: `Found ${matches.length} file(s) matching "${query}":\n${list}`, actionTaken: `Searched for: ${query}`, extra: matches };
 }
 type LastFileAction = { type: 'delete' | 'move' | 'rename'; from: string; to: string; label: string };
+
+// A single candidate match returned to the renderer so it can send back a clarification
+export type RealFileMatch = { path: string; name: string };
+// Pending clarification payload stored in the renderer, forwarded on next submission
+export type PendingClarification = {
+  intent: 'delete' | 'rename';
+  candidates: RealFileMatch[];
+  newName?: string; // for rename only
+};
 let fileActionHistory: LastFileAction[] = [];
 function lunaTrashDir() { return path.join(app.getPath('userData'), 'luna-trash'); }
+function lunaTrashFolder() { return path.join(demoRoot(), 'trash'); }
 async function softTrash(filePath: string): Promise<string> {
   await fs.mkdir(lunaTrashDir(), { recursive: true });
   const dest = path.join(lunaTrashDir(), `${Date.now()}-${path.basename(filePath)}`);
   await fs.rename(filePath, dest);
   return dest;
 }
+// ── Direct-execution helpers (used by routeCommandWithContext) ─────────────
+
+async function deleteRealFileToTrash(filePath: string): Promise<CommandRouteResult> {
+  try {
+    await ensureDir(lunaTrashFolder());
+    const missionId = `delete_${Date.now()}_${crypto.createHash('sha1').update(filePath).digest('hex').slice(0, 8)}`;
+    const trashedName = `${missionId}_${path.basename(filePath)}`;
+    const trashedPath = path.join(lunaTrashFolder(), trashedName);
+    await fs.rename(filePath, trashedPath);
+
+    // Write a typed manifest so listUndoableActions + undoMission can handle it
+    const manifest = {
+      missionId,
+      type: 'delete' as const,
+      createdAt: new Date().toISOString(),
+      description: `Deleted ${path.basename(filePath)}`,
+      originalPath: filePath,
+      trashedPath,
+    };
+    await ensureDir(manifestsRoot());
+    await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
+
+    fileActionHistory.push({ type: 'delete', from: filePath, to: trashedPath, label: `deleted ${path.basename(filePath)}` });
+    await logAudit('automation', 'file_delete', filePath, `Moved "${filePath}" to Luna trash folder. Manifest saved. Reversible via undo.`, 'medium');
+    return { intent: 'file_delete', confidence: 0.95, summary: `Moved "${path.basename(filePath)}" to Luna's trash. Say "undo" any time to restore it.`, actionTaken: `Trashed file: ${filePath}`, extra: { missionId } };
+  } catch (e: any) {
+    await logAudit('automation', 'file_delete_failed', filePath, e?.message || String(e), 'medium');
+    return { intent: 'file_delete', confidence: 0.8, summary: `Found the file but couldn't delete it: ${e?.message || e}.`, actionTaken: `Attempted delete: ${filePath}` };
+  }
+}
+
+async function moveOrRenameRealFile(source: string, destQuery: string, isRename: boolean): Promise<CommandRouteResult> {
+  try {
+    if (isRename) {
+      const newName = path.basename(destQuery.trim());
+      const dest = path.join(path.dirname(source), newName);
+      await fs.rename(source, dest);
+
+      const missionId = `rename_${Date.now()}_${crypto.createHash('sha1').update(source).digest('hex').slice(0, 8)}`;
+      const manifest = { missionId, type: 'rename' as const, createdAt: new Date().toISOString(), description: `Renamed ${path.basename(source)} → ${newName}`, from: source, to: dest };
+      await ensureDir(manifestsRoot());
+      await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
+
+      fileActionHistory.push({ type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` });
+      await logAudit('automation', 'file_rename', source, `Renamed "${source}" to "${newName}". Say "undo" to reverse it.`, 'low');
+      return { intent: 'file_rename', confidence: 0.95, summary: `Renamed "${path.basename(source)}" to "${newName}". Say "undo" to reverse it.`, actionTaken: `Renamed file to: ${newName}`, extra: { missionId } };
+    } else {
+      const folderKey = Object.keys(KNOWN_FOLDERS).sort((a, b) => b.length - a.length).find(name => destQuery.toLowerCase().includes(name));
+      if (!folderKey) return { intent: 'file_move', confidence: 0.7, summary: `Didn't recognize the destination "${destQuery.trim()}". Try a folder like Desktop, Documents, Downloads, Pictures, Videos or Music.`, actionTaken: `Attempted move: ${path.basename(source)}` };
+      const destDir = app.getPath(KNOWN_FOLDERS[folderKey]);
+      const dest = path.join(destDir, path.basename(source));
+      try { await fs.rename(source, dest); } catch { await fs.copyFile(source, dest); await fs.unlink(source); }
+
+      const missionId = `move_${Date.now()}_${crypto.createHash('sha1').update(source).digest('hex').slice(0, 8)}`;
+      const manifest = { missionId, type: 'move' as const, createdAt: new Date().toISOString(), description: `Moved ${path.basename(source)} to ${folderKey}`, from: source, to: dest };
+      await ensureDir(manifestsRoot());
+      await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
+
+      fileActionHistory.push({ type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` });
+      await logAudit('automation', 'file_move', source, `Moved "${source}" to "${dest}". Say "undo" to reverse it.`, 'low');
+      return { intent: 'file_move', confidence: 0.95, summary: `Moved "${path.basename(source)}" to your ${folderKey} folder. Say "undo" to reverse it.`, actionTaken: `Moved file to: ${folderKey}`, extra: { missionId } };
+    }
+  } catch (e: any) {
+    await logAudit('automation', isRename ? 'file_rename_failed' : 'file_move_failed', source, e?.message || String(e), 'low');
+    return { intent: isRename ? 'file_rename' : 'file_move', confidence: 0.8, summary: `Found the file but the operation failed: ${e?.message || e}.`, actionTaken: `Attempted ${isRename ? 'rename' : 'move'}: ${path.basename(source)}` };
+  }
+}
+
+// Resolve a clarification reply against a known candidate list.
+// Returns the matched file path, or null if still ambiguous, or undefined if unrelated.
+function resolveAgainstCandidates(reply: string, candidates: RealFileMatch[]): string | null | undefined {
+  const r = reply.trim().toLowerCase();
+
+  // Ordinal phrases: "the first one", "first", "1", "the second", "2nd", etc.
+  const ordinalWords: Record<string, number> = {
+    'first': 0, '1st': 0, '1': 0, 'one': 0,
+    'second': 1, '2nd': 1, '2': 1, 'two': 1,
+    'third': 2, '3rd': 2, '3': 2, 'three': 2,
+    'fourth': 3, '4th': 3, '4': 3, 'four': 3,
+    'fifth': 4, '5th': 4, '5': 4, 'five': 4,
+  };
+  for (const [word, idx] of Object.entries(ordinalWords)) {
+    if (new RegExp(`\\b${word}\\b`).test(r) && idx < candidates.length) {
+      return candidates[idx].path;
+    }
+  }
+
+  // Filename / path fragment match: check if reply contains part of any candidate name
+  const hits = candidates.filter(c =>
+    r.includes(c.name.toLowerCase()) ||
+    r.includes(path.basename(c.path, path.extname(c.path)).toLowerCase())
+  );
+  if (hits.length === 1) return hits[0].path;
+  if (hits.length > 1) return null; // still ambiguous
+
+  // No match at all — treat reply as unrelated
+  return undefined;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function undoLastFileAction(): Promise<{ ok: boolean; message: string }> {
   const action = fileActionHistory.pop();
   if (!action) return { ok: false, message: 'There is no recent file action to undo.' };
@@ -1799,8 +1996,15 @@ async function tryDeleteFile(command: string): Promise<CommandRouteResult | null
     return { intent: 'file_delete', confidence: 0.8, summary: `I couldn't find a file matching "${query}" in ${scopeLabel}, so nothing was deleted.`, actionTaken: `Attempted delete: ${query}` };
   }
   if (isAmbiguousTop(matches, query)) {
-    const list = matches.slice(0, 5).map(p => `• ${p}`).join('\n');
-    return { intent: 'file_delete', confidence: 0.6, summary: `I found more than one file matching "${query}" and I'm not confident which one you mean, so I didn't delete anything:\n${list}\nTry being more specific, e.g. include the folder name.`, actionTaken: `Ambiguous delete: ${query}` };
+    const topMatches = matches.slice(0, 5);
+    const list = topMatches.map(p => `• ${p}`).join('\n');
+    const candidates: RealFileMatch[] = topMatches.map(p => ({ path: p, name: path.basename(p) }));
+    return {
+      intent: 'file_delete', confidence: 0.6,
+      summary: `I found more than one file matching "${query}" and I'm not confident which one you mean, so I didn't delete anything:\n${list}\nWhich one did you mean? You can say "the first one", "the second one", or part of the filename.`,
+      actionTaken: `Ambiguous delete: ${query}`,
+      extra: { pendingClarification: { intent: 'delete', candidates } satisfies PendingClarification }
+    };
   }
   const target = matches[0];
   try {
@@ -1835,8 +2039,20 @@ async function tryMoveOrRename(command: string): Promise<CommandRouteResult | nu
     return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.8, summary: `I couldn't find a file matching "${cleanedSource}" to ${renameMatch ? 'rename' : 'move'}.`, actionTaken: `Attempted ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
   }
   if (isAmbiguousTop(matches, cleanedSource)) {
-    const list = matches.slice(0, 5).map(p => `• ${p}`).join('\n');
-    return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.6, summary: `I found more than one file matching "${cleanedSource}" and I'm not confident which one you mean, so I didn't ${renameMatch ? 'rename' : 'move'} anything:\n${list}\nTry being more specific, e.g. include the folder name.`, actionTaken: `Ambiguous ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
+    const topMatches = matches.slice(0, 5);
+    const list = topMatches.map(p => `• ${p}`).join('\n');
+    const candidates: RealFileMatch[] = topMatches.map(p => ({ path: p, name: path.basename(p) }));
+    const pendingClarification: PendingClarification = renameMatch
+      ? { intent: 'rename', candidates, newName: destQuery.trim() }
+      : { intent: 'rename', candidates }; // move uses 'rename' intent key but newName carries the dest
+    // For move, store destQuery so we can resume it
+    if (!renameMatch) pendingClarification.newName = destQuery.trim();
+    return {
+      intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.6,
+      summary: `I found more than one file matching "${cleanedSource}" and I'm not confident which one you mean, so I didn't ${renameMatch ? 'rename' : 'move'} anything:\n${list}\nWhich one did you mean? You can say "the first one", "the second one", or part of the filename.`,
+      actionTaken: `Ambiguous ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}`,
+      extra: { pendingClarification }
+    };
   }
   const source = matches[0];
   try {
@@ -1890,6 +2106,38 @@ async function tryLaunchApp(command: string): Promise<CommandRouteResult | null>
   await logAudit('automation', 'app_launch_failed', matchKey, result.error || 'Unknown error', 'low');
   return { intent: 'app_launch', confidence: 0.9, summary: `I tried to open ${matchKey} but it failed: ${result.error}. It may not be installed, or may need a different launch command on this system.`, actionTaken: `Attempted to launch: ${matchKey}` };
 }
+async function routeCommandWithContext(command: string, pending: PendingClarification | null): Promise<CommandRouteResult & { pendingClarification?: PendingClarification | null }> {
+  if (!pending) return routeCommand(command);
+
+  const resolved = resolveAgainstCandidates(command, pending.candidates);
+
+  // undefined = unrelated command — fall through to normal routing, clear pending
+  if (resolved === undefined) {
+    return routeCommand(command);
+  }
+
+  // null = still ambiguous after narrowing — ask again with same candidates
+  if (resolved === null) {
+    const list = pending.candidates.map((c, i) => `${i + 1}. ${c.path}`).join('\n');
+    return {
+      intent: pending.intent === 'delete' ? 'file_delete' : 'file_rename',
+      confidence: 0.5,
+      summary: `Still not sure which one you mean. Here are the options again:\n${list}\nTry saying "the first one", "the second one", or part of the filename.`,
+      actionTaken: 'Awaiting clarification',
+      extra: { pendingClarification: pending }
+    };
+  }
+
+  // Resolved to exactly one file — execute the original action
+  if (pending.intent === 'delete') {
+    return deleteRealFileToTrash(resolved);
+  } else {
+    // rename or move — newName carries the destination
+    const isMove = !!(pending.newName && Object.keys(KNOWN_FOLDERS).some(k => pending.newName!.toLowerCase().includes(k)));
+    return moveOrRenameRealFile(resolved, pending.newName || '', !isMove);
+  }
+}
+
 async function routeCommand(command: string): Promise<CommandRouteResult> {
   const restoreAll = await tryRestoreAll(command);
   if (restoreAll) return restoreAll;
@@ -2027,6 +2275,59 @@ async function fallbackDrill(): Promise<FallbackDrillResult> {
   return { ok: true, primaryStatus: primary.ok ? `Primary Ollama available with ${primary.models.length} model(s). Drill intentionally forced fallback path.` : 'Primary Ollama unavailable. Fallback path used.', fallbackStatus: 'Fallback answered without crashing, without external network and without requiring model download.', response };
 }
 
+// ─── Chat Sessions ────────────────────────────────────────────────────────────
+
+export type ChatSessionRow = { id: string; title: string; created_at: string; updated_at: string };
+export type ChatMessageRow = { id: string; session_id: string; role: string; content: string; meta: string | null; created_at: string };
+
+function listChatSessions(): ChatSessionRow[] {
+  return getDb().prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all() as ChatSessionRow[];
+}
+
+function createChatSession(): string {
+  const id = crypto.randomUUID?.() || crypto.createHash('sha1').update(Date.now() + Math.random().toString()).digest('hex').slice(0, 16);
+  const ts = new Date().toISOString();
+  getDb().prepare('INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(id, '', ts, ts);
+  return id;
+}
+
+function getChatMessages(sessionId: string): ChatMessageRow[] {
+  return getDb().prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId) as ChatMessageRow[];
+}
+
+function appendChatMessage(sessionId: string, role: string, content: string, meta: string | null = null): ChatMessageRow {
+  const id = crypto.randomUUID?.() || crypto.createHash('sha1').update(sessionId + role + Date.now()).digest('hex').slice(0, 16);
+  const ts = new Date().toISOString();
+  getDb().prepare('INSERT INTO chat_messages (id, session_id, role, content, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, sessionId, role, content, meta ?? null, ts);
+  getDb().prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(ts, sessionId);
+  return { id, session_id: sessionId, role, content, meta: meta ?? null, created_at: ts };
+}
+
+async function renameChatSessionIfUntitled(sessionId: string, firstUserMessage: string): Promise<void> {
+  const row = getDb().prepare('SELECT title FROM chat_sessions WHERE id = ?').get(sessionId) as { title: string } | undefined;
+  if (!row || row.title) return; // already titled
+  let title = '';
+  try {
+    const res = await chat([{
+      role: 'user',
+      content: `Generate a short chat title (3–6 words, no punctuation) summarizing this message: "${firstUserMessage.slice(0, 280)}"`
+    }]);
+    title = res.text.trim().replace(/^["']|["']$/g, '').slice(0, 60);
+  } catch {
+    title = firstUserMessage.slice(0, 40).trim();
+  }
+  if (!title) title = firstUserMessage.slice(0, 40).trim();
+  getDb().prepare('UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?').run(title, new Date().toISOString(), sessionId);
+}
+
+function deleteChatSession(sessionId: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM chat_messages WHERE session_id = ?').run(sessionId);
+  db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(sessionId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function installNetworkMonitor() {
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
     if (isExternal(details.url)) {
@@ -2163,6 +2464,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('automation:plan-cleanup', planCleanup);
   ipcMain.handle('automation:execute-cleanup', (_e, plan) => executeCleanup(plan));
   ipcMain.handle('automation:undo', (_e, missionId) => undoMission(missionId));
+  ipcMain.handle('automation:list-undoable', () => listUndoableActions());
+  ipcMain.handle('automation:undo-all', () => undoAllPending());
+  ipcMain.handle('automation:restore-from-trash', (_e, missionId: string) => restoreFromTrash(missionId));
   ipcMain.handle('network:log', () => ({ ...networkLog }));
   ipcMain.handle('resources:get', getResources);
   ipcMain.handle('model:recommend', recommendModel);
@@ -2172,6 +2476,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('lens:import-image', importLensImage);
   ipcMain.handle('lens:explain', (_e, snapshot: LensSnapshot) => explainLens(snapshot));
   ipcMain.handle('command:route', (_e, command: string) => routeCommand(command));
+  ipcMain.handle('command:route-with-context', (_e, command: string, pending: PendingClarification | null) => routeCommandWithContext(command, pending));
   ipcMain.handle('audit:list', readAudit);
   ipcMain.handle('trust:export', exportTrustData);
   ipcMain.handle('data:reset-all', resetAllData);
@@ -2185,6 +2490,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('database:status', databaseStatus);
   ipcMain.handle('ui:open-command-palette', () => openMainCommandPalette());
   ipcMain.handle('shell:reveal', (_e, p: string) => shell.showItemInFolder(p));
+  ipcMain.handle('chat:list-sessions', () => listChatSessions());
+  ipcMain.handle('chat:create-session', () => createChatSession());
+  ipcMain.handle('chat:get-messages', (_e, sessionId: string) => getChatMessages(sessionId));
+  ipcMain.handle('chat:append-message', (_e, sessionId: string, role: string, content: string, meta: string | null) => appendChatMessage(sessionId, role, content, meta));
+  ipcMain.handle('chat:rename-session', (_e, sessionId: string, firstUserMessage: string) => renameChatSessionIfUntitled(sessionId, firstUserMessage));
+  ipcMain.handle('chat:delete-session', (_e, sessionId: string) => { deleteChatSession(sessionId); });
   await createWindow();
   await createOrbWindow();
   globalShortcut.register('CommandOrControl+Shift+L', () => { openMainCommandPalette().catch(() => {}); });
