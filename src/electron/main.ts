@@ -747,14 +747,15 @@ function defaultSkills(): LunaSkill[] {
     makeSkill('extract_invoice_data', 'Extract Invoice Data', 'Extract vendor, total, tax, and line items from an invoice document.', 'invoice', t),
     makeSkill('generate_study_pack', 'Generate Study Pack', 'Generate study summaries and flashcards from a document.', 'study', t),
     makeSkill('explain_codebase_architecture', 'Explain Codebase Architecture', 'Statically analyze a local codebase directory and explain its architecture.', 'research', t),
-    makeSkill('summarize_my_files', 'Summarize My Files', 'Summarize a local file or folder, extracting key points, action items, risks, and suggested next steps.', 'generic', t)
+    makeSkill('summarize_my_files', 'Summarize My Files', 'Summarize a local file or folder, extracting key points, action items, risks, and suggested next steps.', 'generic', t),
+    makeSkill('research_to_presentation', 'Research to Presentation', 'Generate a presentation deck from a provided topic and source material.', 'presentation', t)
   ];
 }
 
-const allowedSkillCategories = ['study', 'invoice', 'meeting', 'research', 'job', 'generic'] as const;
-const allowedSkillTools = ['read_input', 'local_inference', 'structured_extract', 'export_markdown', 'export_pdf', 'export_csv', 'export_json', 'export_ics', 'export_zip', 'export_docx', 'analyze_codebase'] as const;
+const allowedSkillCategories = ['study', 'invoice', 'meeting', 'research', 'job', 'generic', 'presentation'] as const;
+const allowedSkillTools = ['read_input', 'local_inference', 'structured_extract', 'export_markdown', 'export_pdf', 'export_csv', 'export_json', 'export_ics', 'export_zip', 'export_docx', 'analyze_codebase', 'export_pptx', 'export_html'] as const;
 const allowedInputTypes = ['file', 'folder', 'text', 'demo'] as const;
-const allowedOutputTypes = ['pdf', 'docx', 'md', 'html', 'zip', 'json', 'csv', 'ics'] as const;
+const allowedOutputTypes = ['pdf', 'docx', 'md', 'html', 'zip', 'json', 'csv', 'ics', 'pptx'] as const;
 
 function slugify(text: string) {
   return String(text || 'skill').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
@@ -900,6 +901,22 @@ const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], conte
     const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_report`, 'pdf');
     const body = context.currentJson ? JSON.stringify(context.currentJson, null, 2) : context.currentText || '';
     await generatePdf(filePath, skill.name, [{ heading: 'Generated skill output', body }, { heading: 'Privacy', body: 'Generated locally by Luna skill runner.' }]);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_pptx(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_deck`, 'pptx');
+    let bullets = (context.currentText || '').split(/\n+/).map((x: string) => x.replace(/^[-*\d.\s]+/, '').trim()).filter((x: string) => x.length > 5);
+    if (!bullets.length) bullets = ['No content generated.'];
+    await generateResearchPptx(filePath, skill.name, bullets);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async export_html(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_report`, 'html');
+    const content = `<html><head><title>${skill.name}</title></head><body><h1>${skill.name}</h1><pre>${context.currentText || ''}</pre></body></html>`;
+    await ensureDir(path.dirname(filePath));
+    await writeText(filePath, content);
     context.artifactPaths.push(filePath);
     return { path: filePath };
   },
@@ -1138,6 +1155,28 @@ function makeSkill(id: string, name: string, description: string, category: Luna
       { name: 'codebase_package.zip', type: 'zip' }
     ]
   };
+  if (category === 'presentation') return { ...base,
+    inputs: [
+      { name: 'topic', type: 'text', description: 'Presentation topic (e.g. Why local AI is better)' },
+      { name: 'source', type: 'file', accept: ['.pdf', '.docx', '.txt', '.md'], description: 'Source material' }
+    ],
+    steps: [
+      { tool: 'read_input', label: 'Read source material', detail: 'Read the selected source material.' },
+      { tool: 'local_inference', label: 'Generate content', detail: 'Generate exactly 10 concise bullet points for a presentation about the requested topic, using the source evidence.' },
+      { tool: 'export_pptx', label: 'Export PPTX', detail: 'Save the presentation deck as PPTX.' },
+      { tool: 'export_pdf', label: 'Export PDF', detail: 'Save a PDF version of the presentation.' },
+      { tool: 'export_html', label: 'Export HTML', detail: 'Save an HTML brief.' },
+      { tool: 'export_markdown', label: 'Export MD', detail: 'Save a Markdown summary.' },
+      { tool: 'export_zip', label: 'Export ZIP', detail: 'Bundle all generated files into a ZIP package.' }
+    ],
+    outputs: [
+      { name: 'presentation_deck.pptx', type: 'pptx' },
+      { name: 'presentation_report.pdf', type: 'pdf' },
+      { name: 'presentation_brief.html', type: 'html' },
+      { name: 'presentation_notes.md', type: 'md' },
+      { name: 'presentation_package.zip', type: 'zip' }
+    ]
+  };
   return { ...base,
     inputs: [{ name: 'document', type: 'file', accept: ['.pdf', '.docx', '.txt', '.md'], description: 'Source document' }],
     steps: [
@@ -1366,71 +1405,7 @@ async function generateResearchPptx(file: string, title: string, bullets: string
   await pptx.writeFile({ fileName: file });
 }
 
-async function runResearchMission(): Promise<MissionResult> {
-  if (!(await exists(demoRoot()))) await resetDemo();
-  const trace: MissionTraceItem[] = [];
-  const privacy: PrivacyEvent[] = [];
-  const seededSources = [
-    path.join(docsRoot(), 'Research_Local_AI_Privacy.md'),
-    path.join(docsRoot(), 'Portfolio_Notes.md'),
-    path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt')
-  ];
-  const combined: string[] = [];
-  const sourceNames: string[] = [];
-  for (const src of seededSources) {
-    const text = await readText(src);
-    combined.push(`SOURCE ${path.basename(src)}\n${text}`);
-    sourceNames.push(path.basename(src));
-    privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read local source for research-to-presentation mission.' });
-  }
-  trace.push({ time: now(), title: 'Loaded local research sources', detail: `Read ${seededSources.length} documents from the demo workspace.` });
-  const prompt = `Create exactly 10 concise bullet points for a presentation about why Luna's local AI desktop approach is useful and trustworthy. Use this evidence:\n${combined.join('\n\n')}`;
-  const ai = await chat([{ role: 'user', content: prompt }]);
-  privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `Generated research outline via ${ai.mode}.` });
-  let bullets = ai.text.split(/\n+/).map(x => x.replace(/^[-*\d.\s]+/, '').trim()).filter(x => x.length > 10).slice(0, 10);
-  if (bullets.length < 6) bullets = [
-    'Local AI reduces cloud exposure by processing documents and prompts on the user device.',
-    'A visible network counter makes the privacy claim falsifiable during demos.',
-    'Permission-scoped file actions help users trust desktop automation.',
-    'Undo manifests make file automation reversible instead of scary.',
-    'Artifact generation turns AI output into practical PDFs, DOCX files and presentations.',
-    'Luna Skill Creator lets users create new reusable local workflows from plain English.',
-    'A Knowledge Vault provides evidence-based answers from local documents.',
-    'Resource meters show the model is actually running on the machine.',
-    'Fallback mode prevents live demo failure when Ollama is not installed.',
-    'Mission replay explains what Luna did, what it touched and why.'
-  ];
-  trace.push({ time: now(), title: 'Generated slide outline', detail: `${bullets.length} presentation points prepared.` });
 
-  const studioDir = path.join(artifactsRoot(), 'research_presentation');
-  await ensureDir(studioDir);
-  const mdPath = path.join(studioDir, 'speaker_notes.md');
-  const htmlPath = path.join(studioDir, 'research_brief.html');
-  const pdfPath = path.join(studioDir, 'research_brief.pdf');
-  const pptxPath = path.join(studioDir, 'luna_research_deck.pptx');
-  const zipPath = path.join(studioDir, 'research_presentation_package.zip');
-  const title = 'Local AI Desktop Assistants: Privacy, Trust and Useful Automation';
-  await writeText(mdPath, `# ${title}\n\n## Speaker Notes\n\n${bullets.map((b, i) => `${i + 1}. ${b}`).join('\n')}\n\n## Generated locally by Luna\n`);
-  await writeText(htmlPath, `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:Inter,Segoe UI,sans-serif;background:#0b1020;color:#e5e7eb;padding:42px;line-height:1.55}.card{background:#111827;border:1px solid #334155;border-radius:18px;padding:22px;margin:14px 0}h1{color:#a78bfa}.n{color:#06b6d4;font-weight:700}</style></head><body><h1>${title}</h1><p>Generated locally by Luna.</p>${bullets.map((b,i)=>`<div class="card"><span class="n">${i+1}</span> ${b}</div>`).join('')}</body></html>`);
-  await generatePdf(pdfPath, 'Luna Research Brief', [
-    { heading: 'Executive Summary', body: 'Luna turns local AI into a desktop operating layer by combining document understanding, safe automation, privacy proof and reusable skill creation.' },
-    { heading: 'Key Points', body: bullets.map((b, i) => `${i + 1}. ${b}`).join('\n') },
-    { heading: 'Privacy Trace', body: `Processed locally from ${sourceNames.join(', ')}. External request counter currently reports ${networkLog.externalRequests}.` }
-  ]);
-  await generateResearchPptx(pptxPath, title, bullets);
-  await zipFiles(zipPath, [mdPath, htmlPath, pdfPath, pptxPath]);
-  trace.push({ time: now(), title: 'Exported presentation package', detail: 'Created PPTX, PDF, HTML, Markdown speaker notes and ZIP.' });
-  privacy.push({ time: now(), action: 'write_artifacts', target: studioDir, detail: 'Saved research presentation artifacts locally.' });
-  await addMemory('Luna generated a Research-to-Presentation package with PPTX, PDF, HTML, speaker notes and ZIP from local demo documents.', 'project', 'research-skill');
-  await logAudit('artifact', 'research_presentation_artifacts', studioDir, 'Generated PPTX, PDF, HTML, Markdown and ZIP research package.', 'low');
-  return { summary: 'Research-to-Presentation skill completed locally. Luna created a polished deck and export package from local sources.', artifacts: [
-    { name: 'luna_research_deck.pptx', path: pptxPath, type: 'pptx' as any },
-    { name: 'research_brief.pdf', path: pdfPath, type: 'pdf' },
-    { name: 'research_brief.html', path: htmlPath, type: 'html' },
-    { name: 'speaker_notes.md', path: mdPath, type: 'md' },
-    { name: 'research_presentation_package.zip', path: zipPath, type: 'zip' }
-  ], trace, privacy };
-}
 
 function categoryFor(name: string): { category: string; source: 'rule' | 'uncertain' } {
   const lower = name.toLowerCase();
@@ -2348,8 +2323,8 @@ async function routeCommand(command: string): Promise<CommandRouteResult> {
     return { intent: 'analyze_resume_fit', confidence: 0.93, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/presentation|pptx|slides|deck|research/.test(c)) {
-    const r = await runResearchMission();
-    return { intent: 'research_to_presentation', confidence: 0.91, summary: r.summary, actionTaken: 'Ran Research-to-Presentation in Artifact Studio', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('research_to_presentation', { inputValues: { topic: "Luna's local AI desktop approach" } });
+    return { intent: 'research_to_presentation', confidence: 0.91, summary: `Ran skill: ${r.skill.name}`, actionTaken: `Ran skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/organize|clean|cleanup|downloads|files/.test(c)) {
     const plan = await planFolderCleanup(app.getPath('downloads'));
@@ -2590,7 +2565,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('voice:transcribe', (_e, samples: number[]) => transcribeAudio(samples));
   ipcMain.handle('voice:status', voiceModelStatus);
 
-  ipcMain.handle('studio:research-presentation', runResearchMission);
+
   ipcMain.handle('skill:generate', (_e, description: string) => generateSkill(description));
   ipcMain.handle('skill:save', (_e, skill: LunaSkill) => saveSkill(skill));
   ipcMain.handle('skills:delete', (_e, skillId: string) => deleteSkill(skillId));
@@ -2668,10 +2643,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('chat:append-message', (_e, sessionId: string, role: string, content: string, meta: string | null) => appendChatMessage(sessionId, role, content, meta));
   ipcMain.handle('chat:rename-session', (_e, sessionId: string, firstUserMessage: string) => renameChatSessionIfUntitled(sessionId, firstUserMessage));
   ipcMain.handle('chat:delete-session', (_e, sessionId: string) => { deleteChatSession(sessionId); });
+  
   await createWindow();
   await createOrbWindow();
   globalShortcut.register('CommandOrControl+Shift+L', () => { openMainCommandPalette().catch(() => {}); });
-  app.on('activate', async () => { if (!mainWindow || mainWindow.isDestroyed()) await createWindow(); if (!orbWindow || orbWindow.isDestroyed()) await createOrbWindow(); });
+  
+  app.on('activate', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
+    if (!orbWindow || orbWindow.isDestroyed()) await createOrbWindow();
+  });
 });
 
 app.on('will-quit', () => globalShortcut.unregisterAll());

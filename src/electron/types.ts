@@ -62,11 +62,11 @@ export type LunaSkill = {
   id: string;
   name: string;
   description: string;
-  category: 'study' | 'invoice' | 'meeting' | 'research' | 'job' | 'generic';
+  category: 'study' | 'invoice' | 'meeting' | 'research' | 'job' | 'generic' | 'presentation';
   inputs: { name: string; type: 'file' | 'folder' | 'text' | 'demo'; accept?: string[]; description: string }[];
   permissions: string[];
   steps: { tool: string; label: string; detail: string }[];
-  outputs: { name: string; type: 'pdf' | 'docx' | 'md' | 'html' | 'zip' | 'json' | 'csv' | 'ics' | 'csv' | 'ics' }[];
+  outputs: { name: string; type: 'pdf' | 'docx' | 'md' | 'html' | 'zip' | 'json' | 'csv' | 'ics' | 'pptx' }[];
   createdAt: string;
   unsupported?: boolean;
   unsupportedReason?: string;

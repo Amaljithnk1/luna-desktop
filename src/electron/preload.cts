@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld('luna', {
   memorySeed: () => ipcRenderer.invoke('memory:seed'),
   contextBuild: (query: string) => ipcRenderer.invoke('context:build', query),
   chatPlus: (messages: unknown[]) => ipcRenderer.invoke('ai:chat-plus', messages),
-  runResearchMission: () => ipcRenderer.invoke('studio:research-presentation'),
+
   modelRecommend: () => ipcRenderer.invoke('model:recommend'),
   modelBenchmark: () => ipcRenderer.invoke('model:benchmark'),
   fallbackDrill: () => ipcRenderer.invoke('model:fallback-drill'),

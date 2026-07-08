@@ -1,0 +1,1 @@
+const fs = require('fs'); let code = fs.readFileSync('src/renderer/main.tsx', 'utf8'); code = code.replace(/<button\b(?![^>]*\btype=)/g, '<button type="button"'); fs.writeFileSync('src/renderer/main.tsx', code);

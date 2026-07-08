@@ -38,7 +38,7 @@ declare global {
       memorySeed: () => Promise<any>;
       contextBuild: (query: string) => Promise<any>;
       chatPlus: (messages: any[]) => Promise<any>;
-      runResearchMission: () => Promise<any>;
+
       runMissionTemplate: (missionId: string) => Promise<any>;
       modelRecommend: () => Promise<any>;
       modelBenchmark: () => Promise<any>;
