@@ -639,10 +639,10 @@ function makeMemory(type: MemoryItem['type'], text: string, source = 'seed'): Me
 }
 function seedMemories(): MemoryState {
   return { updatedAt: new Date().toISOString(), items: [
-    makeMemory('preference', 'User prefers direct but strategically complete answers, with no unsafe assumptions.', 'onboarding'),
-    makeMemory('goal', 'User wants Luna to be the hardest hackathon submission to beat by combining local AI, proof, safe automation and feature-generating skills.', 'strategy'),
-    makeMemory('project', 'Current project is Luna: a local AI desktop operating layer built with Electron, React, TypeScript, SQLite-style local JSON storage and Ollama.', 'project'),
-    makeMemory('preference', 'User values features that can absorb competitor surprises: if another app has a feature, Luna should have it natively, support it, or create it through Luna Skill Creator.', 'strategy')
+    makeMemory('preference', 'User prefers clear, direct answers with practical next steps and minimal assumptions.', 'onboarding'),
+    makeMemory('goal', 'User wants a private local AI assistant that handles documents, automation, and everyday tasks without sending data to the cloud.', 'strategy'),
+    makeMemory('project', 'Luna is a local-first AI desktop companion built with Electron, React, TypeScript, SQLite and Ollama for offline-capable intelligence.', 'project'),
+    makeMemory('preference', 'User values privacy, transparency, and control — knowing what the AI is doing, what files it touches, and being able to undo or export anything.', 'strategy')
   ] };
 }
 async function readMemory(): Promise<MemoryState> {

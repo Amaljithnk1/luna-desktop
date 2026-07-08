@@ -320,7 +320,7 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
   const [transcribing, setTranscribing] = useState(false);
   const [modelStatus, setModelStatus] = useState<{ ready: boolean; downloaded: boolean } | null>(null);
   const [micError, setMicError] = useState('');
-  const [transcript, setTranscript] = useState('Prepare my job application package');
+  const [transcript, setTranscript] = useState('');
   const [result, setResult] = useState<any>(null);
   const [speakBack, setSpeakBack] = useState(true);
   const [speaking, setSpeaking] = useState(false);
@@ -460,7 +460,7 @@ function LunaLens({ pushLog, assistantName }: { pushLog: (s: string)=>void; assi
 
 function KnowledgeVault({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [state, setState] = useState<any>({ docs: [], chunks: [] });
-  const [query, setQuery] = useState(`What does ${assistantName} prove about privacy?`);
+  const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [answer, setAnswer] = useState<any>(null);
   const [busy, setBusy] = useState('');
@@ -493,9 +493,9 @@ function KnowledgeVault({ pushLog, assistantName }: { pushLog: (s: string)=>void
 
 function MemoryCenter({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [state, setState] = useState<any>({ items: [] });
-  const [text, setText] = useState(`User prefers ${assistantName} to avoid assumptions and cover competitor surprise features through native support or skill creation.`);
+  const [text, setText] = useState('');
   const [type, setType] = useState('preference');
-  const [query, setQuery] = useState(`What does the user want ${assistantName} to be?`);
+  const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [context, setContext] = useState<any>(null);
   const refresh = async () => setState(await window.luna.memoryList());
