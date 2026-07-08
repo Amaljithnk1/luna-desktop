@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Activity, Archive, Bot, CheckCircle2, FileText, Gauge, Network, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Wand2, WifiOff } from 'lucide-react';
 import './styles.css';
 
-type Tab = 'showcase' | 'capabilities' | 'chat' | 'voice' | 'attachments' | 'missionhub' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'trust' | 'settings' | 'help' | 'skills';
+type Tab = 'showcase' | 'capabilities' | 'chat' | 'voice' | 'attachments' | 'studio' | 'lens' | 'vault' | 'memory' | 'automation' | 'trust' | 'settings' | 'help' | 'skills';
 type Msg = { role: 'user' | 'assistant'; content: string; meta?: string };
 
 function Badge({ children, tone='neutral' }: { children: React.ReactNode; tone?: 'neutral'|'good'|'warn'|'bad'|'purple' }) {
@@ -71,10 +71,10 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<any[]>([
     { id: 'health', title: 'Privacy and system proof', status: 'ready', detail: 'Check local model, resource meter and external request counter.' },
-    { id: 'job', title: 'Job Application Mission', status: 'ready', detail: 'Generate report, cover letter, interview prep and ZIP.' },
+    { id: 'job', title: 'Job Application Skill', status: 'ready', detail: 'Generate report and tailored cover letter via local skill.' },
     { id: 'studio', title: 'Research-to-Presentation', status: 'ready', detail: 'Generate PPTX, PDF, HTML, speaker notes and ZIP.' },
     { id: 'vault', title: 'Knowledge Vault Q&A', status: 'ready', detail: 'Index local documents and answer with evidence.' },
-    { id: 'automation', title: 'Safe automation with undo', status: 'ready', detail: 'Preview file cleanup, execute, then undo entire mission.' },
+    { id: 'automation', title: 'Safe automation with undo', status: 'ready', detail: 'Preview file cleanup, execute, then undo entire skill run.' },
     { id: 'skills', title: 'Skill Creator', status: 'ready', detail: 'Generate and run reusable local skills.' },
     { id: 'memory', title: 'Personal memory and adaptive context', status: 'ready', detail: 'Show remembered goals/preferences and context construction.' }
   ]);
@@ -90,10 +90,10 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
       update('health', { status: 'done', detail: `${health.ollama.ok ? 'Ollama connected' : 'Fallback ready'} · external requests ${health.network.externalRequests} · RAM ${health.resources.memoryUsedGb}/${health.resources.memoryTotalGb}GB` });
       pushLog('Showcase: health proof captured');
 
-      update('job', { status: 'running', detail: 'Running job application mission…' });
-      const job = await window.luna.runJobMission(); addArtifacts(job.artifacts);
-      update('job', { status: 'done', detail: `Created ${job.artifacts.length} artifacts including PDF, DOCX and ZIP.` });
-      pushLog('Showcase: job mission complete');
+      update('job', { status: 'running', detail: 'Running job application skill…' });
+      const job = await window.luna.runSkill('analyze_resume_fit'); addArtifacts(job.artifacts);
+      update('job', { status: 'done', detail: `Created ${job.artifacts.length} artifacts including PDF and DOCX.` });
+      pushLog('Showcase: job application skill complete');
 
       update('studio', { status: 'running', detail: 'Generating research presentation package…' });
       const studio = await window.luna.runResearchMission(); addArtifacts(studio.artifacts);
@@ -139,14 +139,14 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
   };
   return <div className="grid two">
     <Card title="5-Minute Guided Demo" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">One click runs {assistantName}’s strongest proof path: privacy proof, local missions, artifact generation, evidence Q&A, reversible automation, skill creation and adaptive memory.</p>
+      <p className="bigcopy">One click runs {assistantName}’s strongest proof path: privacy proof, local skills, artifact generation, evidence Q&A, reversible automation, skill creation and adaptive memory.</p>
       <div className="row-actions"><button className="primary" onClick={run} disabled={running}>{running ? 'Running showcase…' : 'Run full showcase'}</button><button onClick={resetSteps} disabled={running}>Reset showcase</button></div>
       {proof && <div className="proof-cards"><div><b>{proof.network.externalRequests}</b><span>external requests</span></div><div><b>{proof.ollama.ok ? 'Ollama' : 'Fallback'}</b><span>AI mode</span></div><div><b>{proof.resources.cpuLoad}%</b><span>CPU</span></div><div><b>{proof.resources.memoryUsedGb}GB</b><span>RAM used</span></div></div>}
     </Card>
-    <Card title="Showcase Timeline" icon={<Activity size={18}/>}> 
+    <Card title="Showcase Timeline" icon={<Activity size={18}/>}>
       <div className="showcase-steps">{steps.map(step => <div key={step.id} className={`showcase-step ${step.status}`}><div><b>{step.title}</b><span>{step.detail}</span></div><Badge tone={step.status==='done'?'good':step.status==='running'?'purple':step.status==='error'?'bad':'neutral'}>{step.status}</Badge></div>)}</div>
     </Card>
-    <Card title="Generated Artifacts" icon={<FileText size={18}/>} className="wide"> 
+    <Card title="Generated Artifacts" icon={<FileText size={18}/>} className="wide">
       {!artifacts.length && <p className="hint">Run the showcase to generate real files.</p>}
       <div className="artifact-grid">{artifacts.map((a:any, i:number)=><div className="artifact" key={a.path + i}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>
     </Card>
@@ -160,21 +160,21 @@ function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; a
     { title: 'Desktop Companion Layer', tab: 'chat' as Tab, items: [`always-on-top ${assistantName} Orb`, 'global command palette', 'Ctrl/Cmd + Shift + L shortcut', 'natural-language command router', 'voice/transcript commands'] },
     { title: 'Knowledge & Memory', tab: 'vault' as Tab, items: ['Knowledge Vault', 'PDF/DOCX/TXT/MD/CSV/JSON import', 'embedding retrieval when available', 'keyword fallback', 'evidence cards', 'reviewable personal memory', 'adaptive context builder'] },
     { title: 'Artifacts & Attachments', tab: 'attachments' as Tab, items: ['unified attachments', 'local OCR for images', 'PDF export', 'DOCX export', 'PPTX export', 'HTML export', 'Markdown export', 'CSV/JSON/ICS/ZIP export'] },
-    { title: 'Missions', tab: 'missionhub' as Tab, items: ['Job Application Mission', 'Research-to-Presentation', 'Meeting Notes', 'Invoice / Expense', 'Study Pack', 'Codebase Explainer', 'Attachment Summary'] },
-    { title: 'Safe Automation', tab: 'automation' as Tab, items: ['file cleanup planner', 'before/after preview', 'permission approval', 'manifest logging', 'full undo', 'mission replay'] },
+    { title: 'Skills & Extensibility', tab: 'skills' as Tab, items: ['Saved Skills', 'Skill Creator', 'Job Application Skill', 'Meeting Notes Skill', 'Invoice Extractor Skill', 'Study Pack Skill', 'Codebase Explainer Skill'] },
+    { title: 'Safe Automation', tab: 'automation' as Tab, items: ['file cleanup planner', 'before/after preview', 'permission approval', 'manifest logging', 'full undo', 'skill run replay'] },
     { title: 'Privacy & Reliability', tab: 'trust' as Tab, items: ['external network counter', 'resource meter', 'audit log', 'SQLite database status', 'trust export', 'delete/reset data', 'fallback drill', 'preflight + IPC checks'] },
-    { title: 'Extensibility', tab: 'skills' as Tab, items: ['Skill Creator', 'plain-English skill generation', 'safe schema-based tools', 'saved local skills', 'executable built-in skills', 'mission templates'] }
+    { title: 'Extensibility', tab: 'skills' as Tab, items: ['plain-English skill generation', 'safe schema-based tools', 'saved local skills', 'executable built-in skills'] }
   ];
   return <div className="grid two">
-    <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}> 
+    <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}>
       <p className="bigcopy">A single view of what {assistantName} can do. This is useful during judging if someone wants to quickly understand the product surface area.</p>
       <div className="capability-score"><div><b>8</b><span>product pillars</span></div><div><b>50+</b><span>visible capabilities</span></div><div><b>0</b><span>paid APIs required</span></div></div>
       <p className="hint">Each section links to the relevant working {assistantName} area.</p>
     </Card>
-    <Card title="Positioning" icon={<ShieldCheck size={18}/>}> 
+    <Card title="Positioning" icon={<ShieldCheck size={18}/>}>
       <h3>Private local AI operating layer</h3>
       <p className="bigcopy">{assistantName} combines conversation, local context, artifact generation, safe automation, memory, reusable skills, and privacy forensics into one desktop companion.</p>
-      <div className="showcase-list"><div><b>Observe</b><span>Attachments, Lens, Vault and desktop context.</span></div><div><b>Act</b><span>Missions, artifacts, file automation and skills.</span></div><div><b>Explain</b><span>Trace, replay, evidence and audit logs.</span></div><div><b>Control</b><span>Settings, memory toggle, reset, export and undo.</span></div></div>
+      <div className="showcase-list"><div><b>Observe</b><span>Attachments, Lens, Vault and desktop context.</span></div><div><b>Act</b><span>Skills, artifacts, file automation and custom workflows.</span></div><div><b>Explain</b><span>Trace, replay, evidence and audit logs.</span></div><div><b>Control</b><span>Settings, memory toggle, reset, export and undo.</span></div></div>
     </Card>
     {groups.map(g => <Card key={g.title} title={g.title} icon={<CheckCircle2 size={18}/>}>
       <div className="cap-list">{g.items.map(item => <div key={item}><Badge tone="good">ready</Badge><span>{item}</span></div>)}</div>
@@ -416,7 +416,7 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
       <div className="suggestion-list">{examples.map(x=><button key={x} onClick={()=>{setTranscript(x); run(x);}}>{x}</button>)}</div>
     </Card>
     <Card title="Voice Action Result" icon={<Activity size={18}/>}> 
-      {!result && <p className="hint">Say or type a command, then {assistantName} routes it to missions, skills, vault, Lens, automation or model inspector.</p>}
+      {!result && <p className="hint">Say or type a command, then {assistantName} routes it to skills, vault, Lens, automation or model inspector.</p>}
       {result && <div className="action-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">confidence {Math.round(result.confidence*100)}%</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
     </Card>
   </div>;
@@ -434,7 +434,7 @@ function AttachmentsCenter({ pushLog, assistantName }: { pushLog: (s: string)=>v
   const summarize = async () => { setBusy('Summarizing attachments locally…'); const r = await window.luna.attachmentsSummarize(); setResult(r); setBusy(''); pushLog('Attachment summary generated'); };
   return <div className="grid two">
     <Card title="Unified Attachments" icon={<FileText size={18}/>}> 
-      <p className="bigcopy">Import files once, then use them across {assistantName}: summarize, add to Knowledge Vault, route through commands, or feed future missions and skills.</p>
+      <p className="bigcopy">Import files once, then use them across {assistantName}: summarize, add to Knowledge Vault, route through commands, or feed future skills.</p>
       <div className="row-actions"><button className="primary" onClick={importFiles} disabled={!!busy}>Import files</button><button onClick={summarize} disabled={!!busy || !state.items?.length}>Summarize attachments</button><button onClick={toVault} disabled={!!busy || !state.items?.length}>Add to Vault</button><button className="danger" onClick={clear} disabled={!!busy}>Clear</button></div>
       {busy && <p className="hint">{busy}</p>}
       <div className="vault-stats"><div><b>{state.items?.length || 0}</b><span>files</span></div><div><b>{state.items?.reduce((n:number,i:any)=>n+i.chars,0) || 0}</b><span>chars</span></div><div><b>{state.updatedAt ? new Date(state.updatedAt).toLocaleTimeString() : '-'}</b><span>updated</span></div></div>
@@ -453,31 +453,7 @@ function AttachmentsCenter({ pushLog, assistantName }: { pushLog: (s: string)=>v
 }
 
 
-function MissionHub({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
-  const [running, setRunning] = useState('');
-  const [result, setResult] = useState<any>(null);
-  const missions = [
-    { id: 'job-application', title: 'Job Application Mission', desc: `Seeded local docs: resume, job description and portfolio notes. ${assistantName} analyzes fit, generates artifacts, and logs privacy trace.`, outputs: 'PDF + DOCX + ZIP' },
-    { id: 'meeting', title: 'Meeting Notes Mission', desc: 'Transcript → summary, decisions, action items, follow-up email and ICS reminder.', outputs: 'MD + ICS' },
-    { id: 'invoice', title: 'Invoice / Expense Mission', desc: 'Invoice → structured JSON, CSV line items and local PDF report.', outputs: 'JSON + CSV + PDF' },
-    { id: 'study', title: 'Study Pack Mission', desc: 'Research note → summary, flashcards, quiz questions and study PDF.', outputs: 'MD + CSV + PDF' },
-    { id: 'codebase', title: 'Codebase Explainer Mission', desc: 'Local project → static dependency graph, architecture report and ZIP package.', outputs: 'MD + JSON + PDF + ZIP' }
-  ];
-  const run = async (id: string) => { setRunning(id); setResult(null); const r = id === 'job-application' ? await window.luna.runJobMission() : await window.luna.runMissionTemplate(id); setResult({ id, ...r }); setRunning(''); pushLog(`Mission Hub completed: ${id}`); };
-  return <div className="grid two">
-    <Card title="Mission Hub" icon={<Wand2 size={18}/>}> 
-      <p className="bigcopy">Full mission flows for common competitor-style features. Each mission produces real local artifacts, trace and privacy events.</p>
-      <div className="mission-card-grid">{missions.map(m=><div className="mission-card" key={m.id}><div><b>{m.title}</b><p>{m.desc}</p><Badge tone="purple">{m.outputs}</Badge></div><button className="primary" onClick={()=>run(m.id)} disabled={!!running}>{running===m.id?'Running…':'Run'}</button></div>)}</div>
-    </Card>
-    <Card title="Mission Result" icon={<Activity size={18}/>}> 
-      {!result && <p className="hint">Run a mission to see generated artifacts and replay.</p>}
-      {result && <><h3>{result.summary}</h3><div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div></>}
-    </Card>
-    {result && <Card title="Mission Replay & Privacy" icon={<ShieldCheck size={18}/>} className="wide"> 
-      <div className="split-panels"><div><h4>Replay</h4>{result.trace.map((t:any,i:number)=><div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}</div><div><h4>Privacy</h4>{result.privacy.map((p:any,i:number)=><div className="privacy-row compact" key={i}><Badge tone="good">{p.action}</Badge><span>{p.target}</span><small>{p.detail}</small></div>)}</div></div>
-    </Card>}
-  </div>;
-}
+
 
 function ArtifactStudio({ pushLog }: { pushLog: (s: string)=>void }) {
   const [result, setResult] = useState<any>(null);
@@ -496,8 +472,8 @@ function ArtifactStudio({ pushLog }: { pushLog: (s: string)=>void }) {
       <button className="primary" onClick={run} disabled={busy}>{busy ? 'Generating package…' : 'Run Research-to-Presentation'}</button>
       {result && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}
     </Card>
-    <Card title="Studio Mission Replay" icon={<Activity size={18}/>}> 
-      {!result && <p className="hint">Run the mission to see the local artifact pipeline.</p>}
+    <Card title="Studio Replay" icon={<Activity size={18}/>}> 
+      {!result && <p className="hint">Run the research package generator to see the local artifact pipeline.</p>}
       {result?.trace?.map((t:any,i:number)=><div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}
     </Card>
     {result && <Card title="Studio Privacy Trace" icon={<ShieldCheck size={18}/>} className="wide"> 
@@ -823,7 +799,7 @@ function Trust({ health, assistantName }: any) {
       {dbStatus && <><div className="metric"><span>Database path</span><b className="path">{dbStatus.path}</b></div><div className="metric"><span>Database size</span><b>{dbStatus.sizeBytes} bytes</b></div><div className="db-table-grid">{dbStatus.tables.map((t:any)=><div key={t.name}><b>{t.rows}</b><span>{t.name}</span></div>)}</div></>}
     </Card>
     <Card title="Forensics Event Log" icon={<ShieldCheck size={18}/>} className="wide"> 
-      {!audit.length && <p className="hint">No audit events yet. Run a mission or refresh after actions.</p>}
+      {!audit.length && <p className="hint">No audit events yet. Run a skill or refresh after actions.</p>}
       <div className="audit-log">{audit.slice(0,80).map(e=><div className={`audit-event ${e.risk}`} key={e.id}><div><Badge tone={e.risk==='high'?'bad':e.risk==='medium'?'warn':'good'}>{e.category}</Badge><b>{e.action}</b><span>{new Date(e.time).toLocaleString()}</span></div><p>{e.detail}</p><small>{e.target}</small></div>)}</div>
     </Card>
   </div>;
@@ -848,7 +824,7 @@ function HelpCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assista
   ];
   const demoPaths = [
     { title: 'Fastest proof', tab: 'showcase' as Tab, text: 'Open Guided Demo and run the one-click end-to-end proof path.' },
-    { title: 'Real-file demo', tab: 'attachments' as Tab, text: 'Import files from demo-assets, summarize, add to Vault, then run a mission from Mission Hub or Artifact Studio.' },
+    { title: 'Real-file demo', tab: 'attachments' as Tab, text: 'Import files from demo-assets, summarize, add to Vault, then run a skill from Skill Creator or Artifact Studio.' },
     { title: 'Trust demo', tab: 'trust' as Tab, text: 'Show audit log, SQLite status, external request counter, trust export and reset controls.' }
   ];
   return <div className="grid two">
@@ -1101,7 +1077,7 @@ function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boole
     setPendingClarification(nextPending);
     setResult(res); setBusy(false); pushLog(`Palette routed: ${res.intent}`);
   };
-  const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Organize my demo Downloads safely', 'Run the codebase explainer mission', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
+  const suggestions = ['Summarize my attachments', 'Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Organize my demo Downloads safely', 'Run the codebase explainer skill', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
   return <div className="palette-backdrop" onMouseDown={onClose}>
     <div className="palette" onMouseDown={e=>e.stopPropagation()}>
       <div className="palette-head"><div><b>Luna Command Palette</b><span>Ctrl/Cmd + Shift + L</span></div><button className="ghost" onClick={onClose}>Close</button></div>
@@ -1192,7 +1168,6 @@ function App() {
     <button className={tab==='chat'?'active':''} onClick={()=>setTab('chat')}>Chat</button>
     <button className={tab==='voice'?'active':''} onClick={()=>setTab('voice')}>Voice</button>
     <button className={tab==='attachments'?'active':''} onClick={()=>setTab('attachments')}>Attachments</button>
-    <button className={tab==='missionhub'?'active':''} onClick={()=>setTab('missionhub')}>Mission Hub</button>
     <button className={tab==='studio'?'active':''} onClick={()=>setTab('studio')}>Artifact Studio</button>
     <button className={tab==='lens'?'active':''} onClick={()=>setTab('lens')}>Luna Lens</button>
     <button className={tab==='vault'?'active':''} onClick={()=>setTab('vault')}>Knowledge Vault</button>
@@ -1204,7 +1179,7 @@ function App() {
     <button className={tab==='skills'?'active':''} onClick={()=>setTab('skills')}>Skill Creator</button>
     <div className="mini-log"><b>Activity</b>{log.map(x=><span key={x}>{x}</span>)}</div>
   </aside><main>
-    {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='chat' && <ChatCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='missionhub' && <MissionHub pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
+    {tab==='showcase' && <JudgeShowcase pushLog={pushLog} assistantName={assistantName}/>} {tab==='capabilities' && <CapabilityCenter setTab={setTab} assistantName={assistantName}/>} {tab==='chat' && <ChatCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='voice' && <VoiceMode pushLog={pushLog} assistantName={assistantName}/>} {tab==='attachments' && <AttachmentsCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='studio' && <ArtifactStudio pushLog={pushLog}/>} {tab==='lens' && <LunaLens pushLog={pushLog} assistantName={assistantName}/>} {tab==='vault' && <KnowledgeVault pushLog={pushLog} assistantName={assistantName}/>} {tab==='memory' && <MemoryCenter pushLog={pushLog} assistantName={assistantName}/>} {tab==='automation' && <Automation pushLog={pushLog} assistantName={assistantName}/>} {tab==='trust' && <Trust health={health} assistantName={assistantName}/>} {tab==='settings' && <SettingsPage settings={settings} setSettings={setSettings} pushLog={pushLog}/>} {tab==='help' && <HelpCenter setTab={setTab} assistantName={assistantName}/>} {tab==='skills' && <SkillCreator assistantName={assistantName}/>}
   </main><CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} pushLog={pushLog} assistantName={assistantName}/><Onboarding settings={settings} onSave={saveSettings}/></div>;
 }
 

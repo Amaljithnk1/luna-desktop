@@ -8,7 +8,7 @@ import { exec } from 'node:child_process';
 import PDFDocument from 'pdfkit';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const pdfParse: any = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const mammoth: any = require('mammoth');
 const PptxGenJS: any = require('pptxgenjs');
 const tesseract: any = require('tesseract.js');
@@ -315,6 +315,9 @@ async function getResources(): Promise<ResourceSnapshot> {
 }
 
 async function checkOllama() {
+  if (process.env.FORCE_OLLAMA_OFFLINE === '1') {
+    return { ok: false, models: [], error: 'Forced offline by test environment.' };
+  }
   try {
     const res = await fetch('http://127.0.0.1:11434/api/tags');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -330,9 +333,12 @@ async function health(): Promise<HealthStatus> {
 
 function fallbackAnswer(messages: ChatMessage[]): string {
   const last = messages[messages.length - 1]?.content?.toLowerCase() || '';
-  if (last.includes('what') && last.includes('luna')) return 'I am Luna, a local-first desktop AI layer. In this prototype I can chat, analyze seeded local documents, generate job-application artifacts, organize files with preview and full undo, and show privacy/resource proof widgets.';
-  if (last.includes('privacy')) return 'Privacy trace: Luna is using local demo mode or local Ollama only. External network requests are tracked in the header, file access is logged per mission, and demo data can be reset with one click.';
-  return 'Demo fallback response: Ollama is not currently available, so Luna is using its built-in local fallback path. The full app routes to Ollama when it is running, and keeps the same privacy/action tracing UI.';
+  const isSkillStep = last.includes('\nskill:') || last.includes('\nstep:') || last.includes('extract structured json') || last.includes('schema hint:');
+  if (!isSkillStep) {
+    if (last.includes('what') && last.includes('luna')) return 'I am Luna, a local-first desktop AI layer. In this prototype I can chat, analyze seeded local documents, generate job-application artifacts, organize files with preview and full undo, and show privacy/resource proof widgets.';
+    if (last.includes('privacy')) return 'Privacy trace: Luna is using local demo mode or local Ollama only. External network requests are tracked in the header, file access is logged per skill run, and demo data can be reset with one click.';
+  }
+  return 'Local AI model unavailable — connect Ollama and try again';
 }
 
 async function chat(messages: ChatMessage[]): Promise<ChatResult> {
@@ -520,7 +526,9 @@ async function readDocumentAny(filePath: string): Promise<string> {
   if (['.txt', '.md', '.csv', '.json', '.log'].includes(ext)) return fs.readFile(filePath, 'utf8');
   if (ext === '.pdf') {
     const data = await fs.readFile(filePath);
-    const parsed = await pdfParse(data);
+    const parser = new PDFParse({ data });
+    const parsed = await parser.getText();
+    await parser.destroy().catch(() => {});
     return parsed.text || '';
   }
   if (ext === '.docx') {
@@ -765,14 +773,16 @@ async function chatPlus(messages: ChatMessage[]): Promise<ChatResult & { context
 function defaultSkills(): LunaSkill[] {
   const t = new Date().toISOString();
   return [
-    makeSkill('study_pack_generator', 'Study Pack Generator', 'Turn a research document into a summary, flashcards, quiz questions and a local PDF report.', 'study', t),
-    makeSkill('invoice_extractor', 'Invoice Extractor', 'Extract invoice fields, line items and finance-ready CSV/JSON/PDF outputs.', 'invoice', t),
-    makeSkill('meeting_notes_processor', 'Meeting Notes Processor', 'Turn a meeting transcript into decisions, action items, follow-up email and calendar reminders.', 'meeting', t)
+    makeSkill('analyze_resume_fit', 'Analyze Resume Fit', 'Compare a resume against a job description, analyze fit, and generate a cover letter.', 'job', t),
+    makeSkill('summarize_meeting_transcript', 'Summarize Meeting Transcript', 'Extract decisions and action items from a meeting transcript.', 'meeting', t),
+    makeSkill('extract_invoice_data', 'Extract Invoice Data', 'Extract vendor, total, tax, and line items from an invoice document.', 'invoice', t),
+    makeSkill('generate_study_pack', 'Generate Study Pack', 'Generate study summaries and flashcards from a document.', 'study', t),
+    makeSkill('explain_codebase_architecture', 'Explain Codebase Architecture', 'Statically analyze a local codebase directory and explain its architecture.', 'research', t)
   ];
 }
 
 const allowedSkillCategories = ['study', 'invoice', 'meeting', 'research', 'job', 'generic'] as const;
-const allowedSkillTools = ['read_input', 'local_inference', 'structured_extract', 'export_markdown', 'export_pdf', 'export_csv', 'export_json', 'export_ics', 'export_zip'] as const;
+const allowedSkillTools = ['read_input', 'local_inference', 'structured_extract', 'export_markdown', 'export_pdf', 'export_csv', 'export_json', 'export_ics', 'export_zip', 'export_docx', 'analyze_codebase'] as const;
 const allowedInputTypes = ['file', 'folder', 'text', 'demo'] as const;
 const allowedOutputTypes = ['pdf', 'docx', 'md', 'html', 'zip', 'json', 'csv', 'ics'] as const;
 
@@ -909,6 +919,9 @@ const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], conte
       `Source text:\n${source}`
     ].join('\n\n');
     const ai = await chat([{ role: 'user', content: prompt }]);
+    if (ai.text === "Local AI model unavailable — connect Ollama and try again") {
+      return { text: ai.text };
+    }
     const parsed = extractJsonObject(ai.text);
     const payload = parsed && typeof parsed === 'object' ? parsed : { extracted: source.slice(0, 4000) };
     context.currentJson = payload;
@@ -975,6 +988,57 @@ const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], conte
     }
     context.artifactPaths.push(filePath);
     return { path: filePath };
+  },
+  async export_docx(_step, context, skill, skillDir) {
+    const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_document`, 'docx');
+    const body = context.currentJson ? JSON.stringify(context.currentJson, null, 2) : context.currentText || '';
+    const paragraphs = body.split(/\n\s*\n/).map((p: string) => p.trim()).filter(Boolean);
+    await generateDocx(filePath, skill.name, paragraphs);
+    context.artifactPaths.push(filePath);
+    return { path: filePath };
+  },
+  async analyze_codebase(_step, context, skill, skillDir) {
+    let targetFolder = context.inputPath;
+    let isFallback = false;
+    if (targetFolder && (await exists(targetFolder))) {
+      const stat = await fs.stat(targetFolder);
+      if (!stat.isDirectory()) {
+        targetFolder = path.dirname(targetFolder);
+      }
+    }
+    if (!targetFolder || !(await exists(targetFolder))) {
+      targetFolder = codebaseRoot();
+      isFallback = true;
+    }
+    if (!(await exists(targetFolder))) {
+      await resetDemo();
+    }
+    if (isFallback) {
+      context.fallbackNotice = "No target folder selected; analyzing demo-codebase as fallback.";
+      await logAudit('skill', 'analyze_codebase_fallback', targetFolder, 'No target folder selected; fell back to demo-codebase for analysis.', 'low');
+    }
+    const files: string[] = [];
+    async function walk(dir: string) {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (/\.(ts|tsx|js|jsx|json|md)$/.test(entry.name)) files.push(full);
+      }
+    }
+    await walk(targetFolder);
+    const fileSummaries: any[] = [];
+    for (const file of files) {
+      const text = await readText(file);
+      const imports = [...text.matchAll(/import\s+.*?from\s+['\"](.+?)['\"]/g)].map(m => m[1]);
+      const exports = [...text.matchAll(/export\s+(?:async\s+)?(?:function|const|class)\s+([A-Za-z0-9_]+)/g)].map(m => m[1]);
+      const functions = [...text.matchAll(/(?:function|const)\s+([A-Za-z0-9_]+)\s*(?:=|\()/g)].map(m => m[1]);
+      fileSummaries.push({ file: path.relative(targetFolder, file), imports, exports, functions, chars: text.length });
+    }
+    const graphLines = fileSummaries.flatMap((f: any) => f.imports.map((i: string) => `${f.file} -> ${i}`));
+    const payload = { root: targetFolder, files: fileSummaries, edges: graphLines, isDemoFallback: isFallback };
+    context.currentJson = payload;
+    context.currentText = JSON.stringify(payload, null, 2);
+    return { json: payload, text: context.currentText };
   }
 };
 
@@ -1083,14 +1147,36 @@ function makeSkill(id: string, name: string, description: string, category: Luna
     outputs: [{ name: 'meeting_summary.md', type: 'md' }, { name: 'reminders.ics', type: 'ics' }]
   };
   if (category === 'job') return { ...base,
-    inputs: [{ name: 'resume', type: 'file', accept: ['.pdf', '.docx', '.txt'], description: 'Resume' }, { name: 'jobDescription', type: 'text', description: 'Job description text' }],
-    steps: [
-      { tool: 'read_input', label: 'Read resume', detail: 'Read the resume document and supporting job description.' },
-      { tool: 'local_inference', label: 'Compare fit', detail: 'Draft a fit analysis and tailored cover letter for the role.' },
-      { tool: 'export_markdown', label: 'Export analysis', detail: 'Write the match analysis to Markdown.' },
-      { tool: 'export_pdf', label: 'Export application pack', detail: 'Create a PDF brief for the application package.' }
+    inputs: [
+      { name: 'resume', type: 'file', accept: ['.pdf', '.docx', '.txt'], description: 'Resume file' },
+      { name: 'jobDescription', type: 'file', accept: ['.pdf', '.docx', '.txt'], description: 'Job description file' }
     ],
-    outputs: [{ name: 'match_report.pdf', type: 'pdf' }, { name: 'cover_letter.md', type: 'md' }]
+    steps: [
+      { tool: 'read_input', label: 'Read resume', detail: 'Read the resume file.' },
+      { tool: 'read_input', label: 'Read job description', detail: 'Read the job description file.' },
+      { tool: 'local_inference', label: 'Compare fit', detail: 'Compare fit and draft a cover letter based on resume and job description.' },
+      { tool: 'export_pdf', label: 'Export fit analysis PDF', detail: 'Save the fit analysis as a PDF report.' },
+      { tool: 'export_docx', label: 'Export cover letter DOCX', detail: 'Save the cover letter as a DOCX document.' }
+    ],
+    outputs: [{ name: 'fit_analysis.pdf', type: 'pdf' }, { name: 'cover_letter.docx', type: 'docx' }]
+  };
+  if (category === 'research') return { ...base,
+    inputs: [{ name: 'codebase', type: 'folder', description: 'Codebase directory' }],
+    steps: [
+      { tool: 'read_input', label: 'Read codebase folder', detail: 'Select and load the codebase folder.' },
+      { tool: 'analyze_codebase', label: 'Analyze codebase', detail: 'Perform static dependency and function analysis on the codebase.' },
+      { tool: 'local_inference', label: 'Explain codebase architecture', detail: 'Produce architectural explanations and onboarding guide.' },
+      { tool: 'export_json', label: 'Export dependency graph JSON', detail: 'Save the static dependency map as JSON.' },
+      { tool: 'export_markdown', label: 'Export architecture report MD', detail: 'Save the explanation as Markdown.' },
+      { tool: 'export_pdf', label: 'Export report PDF', detail: 'Save a PDF report of the codebase explanation.' },
+      { tool: 'export_zip', label: 'Export complete package ZIP', detail: 'Bundle all reports and graph JSON into a ZIP package.' }
+    ],
+    outputs: [
+      { name: 'dependency_graph.json', type: 'json' },
+      { name: 'codebase_architecture.md', type: 'md' },
+      { name: 'codebase_report.pdf', type: 'pdf' },
+      { name: 'codebase_package.zip', type: 'zip' }
+    ]
   };
   return { ...base,
     inputs: [{ name: 'document', type: 'file', accept: ['.pdf', '.docx', '.txt', '.md'], description: 'Source document' }],
@@ -1231,6 +1317,13 @@ async function runSkill(skillId: string, inputValues?: Record<string, any>): Pro
     for (const step of skill.steps || []) {
       trace.push({ time: now(), title: step.label, detail: step.detail });
       const result = await playSkillTool(step.tool, step, context, skill, skillDir);
+      if (context.fallbackNotice) {
+        trace.push({ time: now(), title: 'Demo Fallback Target Used', detail: context.fallbackNotice });
+        delete context.fallbackNotice;
+      }
+      if (result?.text === "Local AI model unavailable — connect Ollama and try again") {
+        throw new Error("Local AI model unavailable — connect Ollama and try again");
+      }
       if (result?.path) {
         const artifactName = path.basename(result.path);
         addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type']);
@@ -1380,74 +1473,14 @@ async function runResearchMission(): Promise<MissionResult> {
   await zipFiles(zipPath, [mdPath, htmlPath, pdfPath, pptxPath]);
   trace.push({ time: now(), title: 'Exported presentation package', detail: 'Created PPTX, PDF, HTML, Markdown speaker notes and ZIP.' });
   privacy.push({ time: now(), action: 'write_artifacts', target: studioDir, detail: 'Saved research presentation artifacts locally.' });
-  await addMemory('Luna generated a Research-to-Presentation package with PPTX, PDF, HTML, speaker notes and ZIP from local demo documents.', 'project', 'research-mission');
+  await addMemory('Luna generated a Research-to-Presentation package with PPTX, PDF, HTML, speaker notes and ZIP from local demo documents.', 'project', 'research-skill');
   await logAudit('artifact', 'research_presentation_artifacts', studioDir, 'Generated PPTX, PDF, HTML, Markdown and ZIP research package.', 'low');
-  return { summary: 'Research-to-Presentation mission completed locally. Luna created a polished deck and export package from local sources.', artifacts: [
+  return { summary: 'Research-to-Presentation skill completed locally. Luna created a polished deck and export package from local sources.', artifacts: [
     { name: 'luna_research_deck.pptx', path: pptxPath, type: 'pptx' as any },
     { name: 'research_brief.pdf', path: pdfPath, type: 'pdf' },
     { name: 'research_brief.html', path: htmlPath, type: 'html' },
     { name: 'speaker_notes.md', path: mdPath, type: 'md' },
     { name: 'research_presentation_package.zip', path: zipPath, type: 'zip' }
-  ], trace, privacy };
-}
-
-async function runJobMission(): Promise<MissionResult> {
-  if (!(await exists(demoRoot()))) await resetDemo();
-  const privacy: PrivacyEvent[] = [];
-  const trace: MissionTraceItem[] = [];
-  const attachments = await readAttachments().catch(() => ({ items: [] as AttachmentItem[], updatedAt: '' }));
-  const findAttachment = (patterns: RegExp[]) => attachments.items.find(i => patterns.some(p => p.test(i.name.toLowerCase()) || p.test(i.textPreview.toLowerCase())));
-  const resumeAttachment = findAttachment([/resume/, /curriculum/, /cv/]);
-  const jdAttachment = findAttachment([/job/, /description/, /role/, /requirements/]);
-  const portfolioAttachment = findAttachment([/portfolio/, /project/, /github/]);
-  const resumePath = path.join(docsRoot(), 'Demo_User_Resume.txt');
-  const jdPath = path.join(docsRoot(), 'Job_Description_Local_AI_Founding_Engineer.txt');
-  const portfolioPath = path.join(docsRoot(), 'Portfolio_Notes.md');
-  const resume = resumeAttachment?.textPreview || await readText(resumePath);
-  privacy.push({ time: now(), action: resumeAttachment ? 'read_attachment' : 'read_file', target: resumeAttachment?.storedPath || resumePath, detail: resumeAttachment ? 'Used imported resume attachment for local fit analysis.' : 'Read seeded resume text for local fit analysis.' });
-  trace.push({ time: now(), title: resumeAttachment ? 'Read attached resume' : 'Read seeded resume', detail: 'Extracted skills, projects and preferences.' });
-  const jd = jdAttachment?.textPreview || await readText(jdPath);
-  privacy.push({ time: now(), action: jdAttachment ? 'read_attachment' : 'read_file', target: jdAttachment?.storedPath || jdPath, detail: jdAttachment ? 'Used imported job description attachment.' : 'Read seeded job description text.' });
-  trace.push({ time: now(), title: jdAttachment ? 'Read attached job description' : 'Read seeded job description', detail: 'Extracted requirements and bonus skills.' });
-  const portfolio = portfolioAttachment?.textPreview || await readText(portfolioPath);
-  privacy.push({ time: now(), action: portfolioAttachment ? 'read_attachment' : 'read_file', target: portfolioAttachment?.storedPath || portfolioPath, detail: portfolioAttachment ? 'Used imported portfolio/project attachment.' : 'Read seeded project notes.' });
-  if (attachments.items.length) trace.push({ time: now(), title: 'Attachment-aware mission', detail: `Detected ${attachments.items.length} imported attachment(s); used matching resume/JD/portfolio files where available.` });
-
-  const prompt = `Analyze this job fit. Return concise sections: Fit Score, Matching Evidence, Missing Keywords, Resume Improvements, Cover Letter Draft, Interview Questions.\nRESUME:\n${resume}\nJD:\n${jd}\nPORTFOLIO:\n${portfolio}`;
-  const ai = await chat([{ role: 'user', content: prompt }]);
-  trace.push({ time: now(), title: 'Generated fit analysis', detail: `Used ${ai.mode === 'ollama' ? ai.model : 'fallback'} locally.` });
-  privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `External requests tracked by Luna: ${networkLog.externalRequests}.` });
-
-  const reportMd = path.join(artifactsRoot(), 'job_match_report.md');
-  const reportPdf = path.join(artifactsRoot(), 'job_match_report.pdf');
-  const coverDocx = path.join(artifactsRoot(), 'tailored_cover_letter.docx');
-  const prepMd = path.join(artifactsRoot(), 'interview_prep.md');
-  const zip = path.join(artifactsRoot(), 'application_package.zip');
-  const md = `# Job Application Mission\n\nGenerated locally by Luna.\n\n## Analysis\n\n${ai.text}\n`;
-  await writeText(reportMd, md);
-  await generatePdf(reportPdf, 'Luna Job Match Report', [
-    { heading: 'Local AI Analysis', body: ai.text },
-    { heading: 'Evidence Used', body: `Resume: ${resumeAttachment?.name || path.basename(resumePath)}\nJob description: ${jdAttachment?.name || path.basename(jdPath)}\nPortfolio notes: ${portfolioAttachment?.name || path.basename(portfolioPath)}` },
-    { heading: 'Privacy Trace', body: `No external network request is required for this mission. Current tracked external request count: ${networkLog.externalRequests}.` }
-  ]);
-  await generateDocx(coverDocx, 'Tailored Cover Letter Draft', [
-    'Dear Hiring Team,',
-    'I am excited about the Founding Engineer role because my work aligns with local AI desktop assistants, Electron applications, document automation, artifact exports, and privacy-first product design.',
-    'Luna demonstrates exactly the kind of ownership I bring: local model integration, safe file automation, privacy proof, generated reports, and a polished desktop experience.',
-    'Thank you for considering my application.'
-  ]);
-  await writeText(prepMd, `# Interview Prep\n\n- Explain why local AI matters.\n- Walk through Luna's privacy proof widget.\n- Describe reversible file automation.\n- Discuss model fallback and resource-aware routing.\n`);
-  await zipFiles(zip, [reportMd, reportPdf, coverDocx, prepMd]);
-  trace.push({ time: now(), title: 'Exported artifacts', detail: 'Created Markdown, PDF, DOCX and ZIP package.' });
-  await addMemory('Luna completed a Job Application Mission for a local AI founding engineer role and generated a match report, cover letter, interview prep and ZIP package.', 'project', 'job-mission');
-  privacy.push({ time: now(), action: 'write_artifacts', target: artifactsRoot(), detail: 'Saved generated files locally.' });
-  await logAudit('artifact', 'job_mission_artifacts', artifactsRoot(), 'Generated job mission report, cover letter, prep notes and ZIP.', 'low');
-  return { summary: 'Job Application Mission completed locally. Luna analyzed the resume/JD, generated artifacts, and logged every file/action used.', artifacts: [
-    { name: 'job_match_report.md', path: reportMd, type: 'md' },
-    { name: 'job_match_report.pdf', path: reportPdf, type: 'pdf' },
-    { name: 'tailored_cover_letter.docx', path: coverDocx, type: 'docx' },
-    { name: 'interview_prep.md', path: prepMd, type: 'md' },
-    { name: 'application_package.zip', path: zip, type: 'zip' }
   ], trace, privacy };
 }
 
@@ -1951,73 +1984,7 @@ async function resetAllData() {
 }
 
 
-async function runCodebaseMission(): Promise<MissionResult> {
-  if (!(await exists(codebaseRoot()))) await resetDemo();
-  const trace: MissionTraceItem[] = [];
-  const privacy: PrivacyEvent[] = [];
-  const files: string[] = [];
-  async function walk(dir: string) {
-    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (/\.(ts|tsx|js|jsx|json|md)$/.test(entry.name)) files.push(full);
-    }
-  }
-  await walk(codebaseRoot());
-  trace.push({ time: now(), title: 'Scanned codebase', detail: `Found ${files.length} source/documentation files.` });
-  const fileSummaries: { file: string; imports: string[]; exports: string[]; functions: string[]; chars: number }[] = [];
-  for (const file of files) {
-    const text = await readText(file);
-    privacy.push({ time: now(), action: 'read_code_file', target: file, detail: 'Read demo codebase file for local architecture analysis.' });
-    const imports = [...text.matchAll(/import\s+.*?from\s+['\"](.+?)['\"]/g)].map(m => m[1]);
-    const exports = [...text.matchAll(/export\s+(?:async\s+)?(?:function|const|class)\s+([A-Za-z0-9_]+)/g)].map(m => m[1]);
-    const functions = [...text.matchAll(/(?:function|const)\s+([A-Za-z0-9_]+)\s*(?:=|\()/g)].map(m => m[1]);
-    fileSummaries.push({ file: path.relative(codebaseRoot(), file), imports, exports, functions, chars: text.length });
-  }
-  trace.push({ time: now(), title: 'Built dependency map', detail: 'Extracted imports, exports and functions with local static analysis.' });
-  const graphLines = fileSummaries.flatMap(f => f.imports.map(i => `${f.file} -> ${i}`));
-  const prompt = `Explain this small TypeScript/React codebase architecture, risks, and onboarding steps. Use this static analysis JSON:\n${JSON.stringify(fileSummaries, null, 2)}`;
-  const ai = await chatPlus([{ role: 'user', content: prompt }]);
-  privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `Explained codebase via ${ai.mode}.` });
-  const dir = path.join(artifactsRoot(), 'codebase_explainer');
-  await ensureDir(dir);
-  const mdPath = path.join(dir, 'codebase_architecture.md');
-  const jsonPath = path.join(dir, 'dependency_graph.json');
-  const pdfPath = path.join(dir, 'codebase_report.pdf');
-  const zipPath = path.join(dir, 'codebase_explainer_package.zip');
-  await writeText(jsonPath, JSON.stringify({ root: codebaseRoot(), files: fileSummaries, edges: graphLines }, null, 2));
-  await writeText(mdPath, `# Codebase Architecture Report\n\n${ai.text}\n\n## Files\n${fileSummaries.map(f => `- ${f.file}: exports ${f.exports.join(', ') || 'none'}; imports ${f.imports.join(', ') || 'none'}`).join('\n')}\n\n## Dependency Edges\n${graphLines.map(x => `- ${x}`).join('\n')}`);
-  await generatePdf(pdfPath, 'Luna Codebase Explainer Report', [
-    { heading: 'Architecture Explanation', body: ai.text },
-    { heading: 'Files Analyzed', body: fileSummaries.map(f => `${f.file} — ${f.chars} chars — exports: ${f.exports.join(', ') || 'none'}`).join('\n') },
-    { heading: 'Dependency Graph', body: graphLines.join('\n') || 'No imports detected.' },
-    { heading: 'Privacy', body: 'Codebase was analyzed locally from the seeded demo workspace.' }
-  ]);
-  await zipFiles(zipPath, [mdPath, jsonPath, pdfPath]);
-  trace.push({ time: now(), title: 'Exported codebase report', detail: 'Created Markdown, JSON dependency graph, PDF and ZIP.' });
-  await addMemory('Luna ran a Codebase Explainer mission and generated architecture documentation from a local TypeScript demo project.', 'project', 'codebase-mission');
-  await logAudit('artifact', 'codebase_explainer_artifacts', dir, 'Generated codebase architecture report and dependency graph.', 'low');
-  return { summary: 'Codebase Explainer Mission completed locally.', artifacts: [
-    { name: 'codebase_architecture.md', path: mdPath, type: 'md' },
-    { name: 'dependency_graph.json', path: jsonPath, type: 'json' },
-    { name: 'codebase_report.pdf', path: pdfPath, type: 'pdf' },
-    { name: 'codebase_explainer_package.zip', path: zipPath, type: 'zip' }
-  ], trace, privacy };
-}
 
-async function runMissionTemplate(missionId: string): Promise<MissionResult> {
-  if (missionId === 'codebase') return runCodebaseMission();
-  const skills = await listSkills();
-  const category = missionId === 'meeting' ? 'meeting' : missionId === 'invoice' ? 'invoice' : 'study';
-  let skill = skills.find(s => s.category === category);
-  if (!skill) {
-    skill = makeSkill(`${category}_mission_${Date.now()}`, category === 'invoice' ? 'Invoice Extractor' : category === 'meeting' ? 'Meeting Notes Processor' : 'Study Pack Generator', `Mission wrapper for ${category}`, category as LunaSkill['category']);
-    await saveSkill(skill);
-  }
-  const r = await runSkill(skill.id);
-  await addMemory(`Luna ran the ${skill.name} mission and generated ${r.artifacts.length} artifact(s).`, 'project', `${missionId}-mission`);
-  return { summary: `${skill.name} Mission completed locally.`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
-}
 
 const KNOWN_APPS: Record<string, string> = {
   'calculator': 'calc',
@@ -2437,28 +2404,28 @@ async function routeCommand(command: string): Promise<CommandRouteResult> {
   if (fileSearch) return fileSearch;
   const c = command.toLowerCase();
   if (/codebase|repository|repo|architecture|explain code/.test(c)) {
-    const r = await runMissionTemplate('codebase');
-    return { intent: 'codebase_explainer_mission', confidence: 0.9, summary: r.summary, actionTaken: 'Ran Codebase Explainer Mission', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('explain_codebase_architecture');
+    return { intent: 'explain_codebase_architecture', confidence: 0.9, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/meeting|transcript|follow.?up|action items/.test(c)) {
-    const r = await runMissionTemplate('meeting');
-    return { intent: 'meeting_notes_mission', confidence: 0.88, summary: r.summary, actionTaken: 'Ran Meeting Notes Mission', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('summarize_meeting_transcript');
+    return { intent: 'summarize_meeting_transcript', confidence: 0.88, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/invoice|receipt|expense/.test(c)) {
-    const r = await runMissionTemplate('invoice');
-    return { intent: 'invoice_extractor_mission', confidence: 0.88, summary: r.summary, actionTaken: 'Ran Invoice Extractor Mission', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('extract_invoice_data');
+    return { intent: 'extract_invoice_data', confidence: 0.88, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/study|flashcard|quiz/.test(c)) {
-    const r = await runMissionTemplate('study');
-    return { intent: 'study_pack_mission', confidence: 0.86, summary: r.summary, actionTaken: 'Ran Study Pack Mission', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('generate_study_pack');
+    return { intent: 'generate_study_pack', confidence: 0.86, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/attach|attachment|uploaded file|summarize files|summarize attachments/.test(c)) {
     const r = await summarizeAttachments();
     return { intent: 'attachment_summary', confidence: 0.87, summary: r.summary, actionTaken: 'Summarized imported attachments', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/job|resume|cover letter|application|interview/.test(c)) {
-    const r = await runJobMission();
-    return { intent: 'job_application_mission', confidence: 0.93, summary: r.summary, actionTaken: 'Ran Job Application Mission', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
+    const r = await runSkill('analyze_resume_fit');
+    return { intent: 'analyze_resume_fit', confidence: 0.93, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/presentation|pptx|slides|deck|research/.test(c)) {
     const r = await runResearchMission();
@@ -2702,8 +2669,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:chat', (_e, messages) => chat(messages));
   ipcMain.handle('voice:transcribe', (_e, samples: number[]) => transcribeAudio(samples));
   ipcMain.handle('voice:status', voiceModelStatus);
-  ipcMain.handle('mission:job-application', runJobMission);
-  ipcMain.handle('mission:template-run', (_e, missionId: string) => runMissionTemplate(missionId));
+
   ipcMain.handle('studio:research-presentation', runResearchMission);
   ipcMain.handle('skill:generate', (_e, description: string) => generateSkill(description));
   ipcMain.handle('skill:save', (_e, skill: LunaSkill) => saveSkill(skill));
