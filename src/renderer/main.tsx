@@ -121,7 +121,7 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
       pushLog('Showcase: Skill Creator complete');
 
       update('memory', { status: 'running', detail: 'Building adaptive context from memory and vault…' });
-      const ctx = await window.luna.contextBuild('What is Luna trying to become for this hackathon?');
+      const ctx = await window.luna.contextBuild('What is Luna trying to become in the future?');
       update('memory', { status: 'done', detail: `Selected ${ctx.memories.length} memories and ${ctx.vault.length} vault evidence chunks.` });
       pushLog('Showcase: adaptive context complete');
     } catch (e: any) {
@@ -167,7 +167,7 @@ function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; a
   ];
   return <div className="grid two">
     <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}>
-      <p className="bigcopy">A single view of what {assistantName} can do. This is useful during judging if someone wants to quickly understand the product surface area.</p>
+      <p className="bigcopy">A single view of what {assistantName} can do. This is useful for quickly understanding the product surface area.</p>
       <div className="capability-score"><div><b>8</b><span>product pillars</span></div><div><b>50+</b><span>visible capabilities</span></div><div><b>0</b><span>paid APIs required</span></div></div>
       <p className="hint">Each section links to the relevant working {assistantName} area.</p>
     </Card>
@@ -763,7 +763,7 @@ function HelpCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assista
   const troubleshooting = [
     ['Ollama not detected', `${assistantName} still works in transparent fallback mode. For local model mode, install Ollama and run: ollama pull qwen2.5:3b`],
     ['Embeddings unavailable', 'Knowledge Vault falls back to keyword retrieval. For semantic retrieval, run: ollama pull nomic-embed-text'],
-    ['Windows SmartScreen warning', 'This is an unsigned hackathon build. Click More info → Run anyway.'],
+    ['Windows SmartScreen warning', 'This is an unsigned build. Click More info → Run anyway.'],
     ['Voice unavailable', 'Use transcript mode. Voice is optional and command routing still works.'],
     ['OCR slow', 'Use the provided demo image or text attachments for a faster walkthrough.'],
     ['Demo state messy', 'Use Reset demo in the header or Delete/reset local data in Trust Center.']
@@ -775,7 +775,7 @@ function HelpCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; assista
   ];
   return <div className="grid two">
     <Card title="Help & Demo Guide" icon={<Sparkles size={18}/>}> 
-      <p className="bigcopy">Use this page during final recording or judging if you need to quickly explain how to operate {assistantName}.</p>
+      <p className="bigcopy">Find quick solutions, keyboard shortcuts, and recommended setups here.</p>
       <div className="help-paths">{demoPaths.map(p => <div key={p.title}><b>{p.title}</b><span>{p.text}</span><button type="button" onClick={()=>setTab(p.tab)}>Open</button></div>)}</div>
     </Card>
     <Card title="Keyboard & Access" icon={<Activity size={18}/>}> 
