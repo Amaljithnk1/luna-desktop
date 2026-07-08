@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, Archive, Bot, CheckCircle2, FileText, Gauge, Network, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Wand2, WifiOff } from 'lucide-react';
 import './styles.css';
@@ -616,21 +616,46 @@ function Automation({ pushLog, assistantName }: { pushLog: (s: string)=>void; as
 
   const makePlan = async () => {
     setDone(null); setRestoreResult(null);
-    setPlan(await window.luna.planCleanup());
-    pushLog('Cleanup plan generated');
+    const folderPath = await window.luna.openFolderDialog();
+    if (!folderPath) return;
+    setBusy('Scanning folder and classifying files…');
+    try {
+      setPlan(await window.luna.planCleanup(folderPath));
+      pushLog(`Cleanup plan generated for ${folderPath}`);
+    } finally {
+      setBusy('');
+    }
   };
 
   const execute = async () => {
-    const r = await window.luna.executeCleanup(plan);
-    setDone(r);
-    await refreshHistory();
-    pushLog('Cleanup executed with manifest');
+    console.log('Automation: "Approve and run" clicked! Plan:', plan); // TEMP LOG
+    setBusy('Moving files and building undo manifest…');
+    try {
+      const r = await window.luna.executeCleanup(plan);
+      setDone(r);
+      // If it was a no-op, don't keep the plan
+      if (r.manifestPath === null) {
+        setPlan(null);
+      }
+      await refreshHistory();
+      pushLog(r.manifestPath === null ? 'Nothing to organize' : 'Cleanup executed with manifest');
+    } catch (e) {
+      console.error('Automation: execute failed!', e);
+      setRestoreResult(`Failed to execute cleanup: ${(e as Error).message}`);
+    } finally {
+      setBusy('');
+    }
   };
 
   const undoOne = async (missionId: string) => {
     setBusy(missionId);
     try {
       await window.luna.undoMission(missionId);
+      // If this was the last completed cleanup, reset UI
+      if (done && done.missionId === missionId) {
+        setDone(null);
+        setPlan(null);
+      }
       await refreshHistory();
       pushLog(`Undid action ${missionId}`);
     } catch (e: any) {
@@ -643,6 +668,9 @@ function Automation({ pushLog, assistantName }: { pushLog: (s: string)=>void; as
     setBusy('all');
     const r = await window.luna.undoAllPending();
     setRestoreResult(r.message);
+    // Reset UI after undoing all
+    setDone(null);
+    setPlan(null);
     await refreshHistory();
     pushLog(r.ok ? 'Restored all actions' : 'Restore all failed partway');
     setBusy('');
@@ -667,13 +695,41 @@ function Automation({ pushLog, assistantName }: { pushLog: (s: string)=>void; as
 
   return <div className="grid two">
     <Card title="Computer Cleanup with Preview" icon={<Archive size={18}/>}>
-      <button className="primary" onClick={makePlan} disabled={!!busy}>Analyze demo Downloads</button>
+      <button className="primary" onClick={makePlan} disabled={!!busy}>Pick a folder to analyze</button>
+      {busy && <p className="hint">{busy}</p>}
       {plan && <>
-        <div className="risk"><Badge tone="good">Risk: {plan.risk}</Badge><Badge tone="purple">Undo manifest will be created</Badge></div>
-        <div className="moves">{plan.moves.map((m:any,i:number)=><div key={i}><b>{m.from.split(/[\\/]/).pop()}</b><span>&#8594; {m.to.split(/[\\/]/).slice(-2).join('/')}</span><small>{m.reason}</small></div>)}</div>
-        <button onClick={execute} disabled={!!done || !!busy}>Approve and run</button>
+        <div className="risk"><Badge tone={plan.risk === 'high' ? 'bad' : 'good'}>Risk: {plan.risk}</Badge><Badge tone="purple">Undo manifest will be created</Badge></div>
+        {plan.warning && <div className="warning" style={{background:'#fff3cd', color:'#856404', padding:'10px', borderRadius:'6px', marginTop:'10px', marginBottom:'10px'}}>⚠️ {plan.warning}</div>}
+        <div className="moves">{plan.moves.map((m:any,i:number)=>
+          <div key={i}>
+            <b>{m.from.split(/[\\/]/).pop()}</b>
+            <span>&#8594; {m.to.split(/[\\/]/).slice(-2).join('/')}</span>
+            <small>
+              {m.reason}
+              <span style={{marginLeft:'8px', padding:'2px 6px', borderRadius:'4px', fontSize:'10px', backgroundColor: m.classificationSource === 'ai' ? '#9333ea' : '#16a34a', color:'white'}}>
+                {m.classificationSource === 'ai' ? 'AI' : 'Rule'}
+              </span>
+            </small>
+          </div>
+        )}</div>
+        <button onClick={execute} disabled={!!done || !!busy || !!plan.warning}>{plan.warning ? 'Refused' : 'Approve and run'}</button>
       </>}
-      {done && <div className="success"><CheckCircle2 size={16}/> Moved {done.moved} files. Manifest saved. <button onClick={()=>window.luna.revealPath(done.manifestPath)}>Reveal manifest</button></div>}
+      {done && (done.manifestPath === null ? (
+        <div className="success"><CheckCircle2 size={16}/> Nothing to organize — this folder is already sorted</div>
+      ) : (
+        <div className="success">
+          <CheckCircle2 size={16}/> Moved {done.moved} file{done.moved !== 1 ? 's' : ''}.
+          {done.skipped > 0 && ` Skipped ${done.skipped} file${done.skipped !== 1 ? 's' : ''} (${done.skippedFiles.join(', ')}) because they were no longer there.`}
+          Manifest saved.
+          <button onClick={async () => {
+            try {
+              await window.luna.revealPath(done.manifestPath);
+            } catch (e) {
+              setRestoreResult(`Failed to reveal manifest: ${(e as Error).message}`);
+            }
+          }}>Reveal manifest</button>
+        </div>
+      ))}
     </Card>
 
     <Card title="Undo History" icon={<RotateCcw size={18}/>}>

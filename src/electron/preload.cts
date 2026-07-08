@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('luna', {
   transcribeAudio: (samples: Float32Array | number[]) => ipcRenderer.invoke('voice:transcribe', Array.from(samples)),
   voiceStatus: () => ipcRenderer.invoke('voice:status'),
   runJobMission: () => ipcRenderer.invoke('mission:job-application'),
-  planCleanup: () => ipcRenderer.invoke('automation:plan-cleanup'),
+  planCleanup: (folderPath?: string) => ipcRenderer.invoke('automation:plan-cleanup', folderPath),
   executeCleanup: (plan: unknown) => ipcRenderer.invoke('automation:execute-cleanup', plan),
   undoMission: (missionId: string) => ipcRenderer.invoke('automation:undo', missionId),
   listUndoableActions: () => ipcRenderer.invoke('automation:list-undoable'),

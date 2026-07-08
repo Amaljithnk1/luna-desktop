@@ -56,6 +56,18 @@ async function exists(p: string) { try { await fs.access(p); return true; } catc
 async function readText(p: string) { return fs.readFile(p, 'utf8'); }
 async function writeText(p: string, content: string) { await ensureDir(path.dirname(p)); await fs.writeFile(p, content, 'utf8'); }
 
+async function getUniquePath(destDir: string, filename: string): Promise<string> {
+  const ext = path.extname(filename);
+  const baseName = path.basename(filename, ext);
+  let counter = 1;
+  let candidate = path.join(destDir, filename);
+  while (await exists(candidate)) {
+    candidate = path.join(destDir, `${baseName} (${counter})${ext}`);
+    counter++;
+  }
+  return candidate;
+}
+
 
 
 function getDb() {
@@ -260,8 +272,32 @@ async function ensureInitialData() {
   await ensureDir(docsRoot());
   await ensureDir(artifactsRoot());
   await ensureDir(manifestsRoot());
-  await ensureDir(messyRoot());
+  await ensureDir(lunaTrashFolder()); // Ensure Luna's trash folder exists
   await ensureDir(attachmentsRoot());
+  
+  // One-time cleanup: delete any manifest that references paths inside demo workspace
+  try {
+    const manifestFiles = (await fs.readdir(manifestsRoot())).filter(f => f.endsWith('.json'));
+    for (const file of manifestFiles) {
+      const manifestPath = path.join(manifestsRoot(), file);
+      try {
+        const manifest = JSON.parse(await readText(manifestPath));
+        const isDemoManifest = (
+          (manifest.root && (manifest.root as string).startsWith(demoRoot())) || // Old cleanup manifests have root
+          (manifest.originalPath && (manifest.originalPath as string).startsWith(demoRoot())) || // Delete manifests
+          (manifest.from && (manifest.from as string).startsWith(demoRoot())) // Rename/move manifests
+        );
+        if (isDemoManifest) {
+          await fs.unlink(manifestPath);
+          await logAudit('automation', 'cleanup_old_demo_manifest', manifestPath, 'Removed stale demo-sandbox manifest.', 'low');
+        }
+      } catch (e) {
+        // If manifest is invalid/corrupt, delete it too
+        await fs.unlink(manifestPath).catch(() => {});
+      }
+    }
+  } catch {}
+  
   getDb();
   return { ok: true, demoRoot: demoRoot(), reusedExistingData: true };
 }
@@ -1415,83 +1451,347 @@ async function runJobMission(): Promise<MissionResult> {
   ], trace, privacy };
 }
 
-function categoryFor(name: string) {
+function categoryFor(name: string): { category: string; source: 'rule' | 'uncertain' } {
   const lower = name.toLowerCase();
-  if (/\.pdf|\.docx|\.txt|\.md/.test(lower)) return 'Documents';
-  if (/\.png|\.jpg|\.jpeg|screenshot/.test(lower)) return 'Images';
-  if (/invoice|expense/.test(lower)) return 'Finance';
-  return 'Other';
+  if (/\.pdf|\.docx|\.txt|\.md|\.doc|\.rtf|\.odt/.test(lower)) return { category: 'Documents', source: 'rule' };
+  if (/\.png|\.jpg|\.jpeg|\.gif|\.bmp|\.tiff|\.webp|\.svg|screenshot/.test(lower)) return { category: 'Images', source: 'rule' };
+  if (/\.mp4|\.mkv|\.mov|\.avi|\.wmv|\.flv|\.webm/.test(lower)) return { category: 'Videos', source: 'rule' };
+  if (/\.zip|\.rar|\.7z|\.tar|\.gz|\.bz2|\.xz/.test(lower)) return { category: 'Archives', source: 'rule' };
+  if (/invoice|expense|receipt|billing|statement/.test(lower)) return { category: 'Finance', source: 'rule' };
+  return { category: 'Other', source: 'uncertain' };
 }
 
-async function sha256(p: string) { return crypto.createHash('sha256').update(await fs.readFile(p)).digest('hex'); }
+async function batchClassifyFiles(files: string[]): Promise<Map<string, { category: string; source: 'ai' | 'uncertain' }>> {
+  const o = await checkOllama();
+  if (!o.ok || o.models.length === 0) {
+    const map = new Map<string, { category: string; source: 'ai' | 'uncertain' }>();
+    for (const file of files) map.set(file, { category: 'Other', source: 'uncertain' });
+    return map;
+  }
+  
+  const categories = ['Documents', 'Images', 'Videos', 'Finance', 'Archives', 'Uncertain'];
+  const prompt = `Classify each of these filenames into ONE of these EXACT categories: ${categories.join(', ')}.
+Only reply with a JSON object where keys are the exact filenames and values are the category string. No extra text or explanation.
+Filenames: ${JSON.stringify(files, null, 2)}`;
 
-async function planCleanup(): Promise<FilePlan> {
-  if (!(await exists(demoRoot()))) await resetDemo();
-  const files = await fs.readdir(messyRoot());
-  const missionId = `cleanup_${Date.now()}`;
-  const creates = Array.from(new Set(files.map(categoryFor))).map(c => path.join(messyRoot(), c));
-  const moves = files.map(file => {
-    const from = path.join(messyRoot(), file); const to = path.join(messyRoot(), categoryFor(file), file);
-    return { from, to, reason: `Classified as ${categoryFor(file)} based on filename and extension.` };
+  const settings = await getSettings().catch(() => defaultSettings());
+  const preferred = ['qwen2.5:3b', 'llama3.2:3b', 'phi3:mini'];
+  const explicit = settings.preferredModel && settings.preferredModel !== 'auto'
+    ? o.models.find((x: string) => x.startsWith(settings.preferredModel))
+    : undefined;
+  const model = explicit || preferred.find(m => o.models.some((x: string) => x.startsWith(m))) || o.models[0];
+
+  try {
+    const res = await fetch('http://127.0.0.1:11434/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          { role: 'system', content: 'You are a precise file classifier. Only return valid JSON, no extra text.' },
+          { role: 'user', content: prompt }
+        ]
+      })
+    });
+    const json: any = await res.json();
+    const text = json.message?.content || json.response || '';
+    const parsed: Record<string, string> = JSON.parse(text);
+    const map = new Map<string, { category: string; source: 'ai' | 'uncertain' }>();
+    for (const file of files) {
+      const cat = parsed[file];
+      if (cat && (categories as string[]).includes(cat) && cat !== 'Uncertain') {
+        map.set(file, { category: cat, source: 'ai' });
+      } else {
+        map.set(file, { category: 'Other', source: 'uncertain' });
+      }
+    }
+    await logAudit('ai', 'batch_classify_files', model, `Classified ${files.length} ambiguous files locally via Ollama.`, 'low');
+    return map;
+  } catch {
+    const map = new Map<string, { category: string; source: 'ai' | 'uncertain' }>();
+    for (const file of files) map.set(file, { category: 'Other', source: 'uncertain' });
+    return map;
+  }
+}
+
+async function sha256(p: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fssync.createReadStream(p);
+    stream.on('data', (chunk: Buffer) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
   });
-  return { missionId, root: messyRoot(), creates, moves, risk: 'low' };
+}
+
+async function planFolderCleanup(folderPath?: string): Promise<FilePlan> {
+  const targetFolder = folderPath || messyRoot();
+  const dirEntries = await fs.readdir(targetFolder, { withFileTypes: true });
+  const missionId = `cleanup_${Date.now()}`;
+
+  // Layer 1: Project folder detection
+  const projectMarkers = [
+    'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+    '.git', '.gitignore', '.gitattributes',
+    'requirements.txt', 'pyproject.toml', 'setup.py',
+    'Cargo.toml', 'Cargo.lock',
+    'go.mod', 'go.sum',
+    'pom.xml', 'build.gradle',
+    'Makefile', 'CMakeLists.txt',
+    '.env', '.env.example'
+  ];
+  let isProjectFolder = false;
+  for (const marker of projectMarkers) {
+    const markerPath = path.join(targetFolder, marker);
+    if (await exists(markerPath)) {
+      isProjectFolder = true;
+      break;
+    }
+  }
+
+  // Layer 2: Fixed exclusion list (never move these, regardless of folder)
+  const excludedFiles = new Set([
+    'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+    '.gitignore', '.gitattributes', '.env', '.env.local', '.env.development', '.env.production',
+    'requirements.txt', 'pyproject.toml', 'setup.py',
+    'Cargo.toml', 'Cargo.lock',
+    'go.mod', 'go.sum',
+    'pom.xml', 'build.gradle',
+    'Makefile', 'CMakeLists.txt',
+    'README.md', 'README.txt', 'LICENSE', 'LICENSE.txt'
+  ]);
+
+  // Build list of valid files to consider (skip directories and excluded files)
+  const files: string[] = [];
+  for (const entry of dirEntries) {
+    if (!entry.isFile()) continue;
+    if (excludedFiles.has(entry.name)) continue;
+    files.push(entry.name);
+  }
+
+  // Split into rule-matched and ambiguous
+  const ruleMatched: Array<{ file: string; category: string }> = [];
+  const ambiguousFiles: string[] = [];
+  for (const file of files) {
+    const result = categoryFor(file);
+    if (result.source === 'rule') {
+      ruleMatched.push({ file, category: result.category });
+    } else {
+      ambiguousFiles.push(file);
+    }
+  }
+
+  // Batch classify ambiguous
+  const ambiguousResults = await batchClassifyFiles(ambiguousFiles);
+
+  // Combine results
+  const allResults = new Map<string, { category: string; source: 'rule' | 'ai' | 'uncertain' }>();
+  for (const rm of ruleMatched) {
+    allResults.set(rm.file, { category: rm.category, source: 'rule' });
+  }
+  for (const [file, result] of ambiguousResults) {
+    allResults.set(file, result);
+  }
+
+  // Define real system folders
+  const documentsPath = app.getPath('documents');
+  const picturesPath = app.getPath('pictures');
+  const videosPath = app.getPath('videos');
+  const financePath = path.join(documentsPath, 'Finance');
+
+  // Build creates and moves
+  const createsSet = new Set<string>();
+  const moves: FilePlan['moves'] = [];
+  for (const file of files) {
+    const result = allResults.get(file);
+    if (!result) continue;
+    if (result.source === 'uncertain') {
+      continue; // Don't move uncertain files at all
+    }
+
+    // Determine real destination folder
+    let destFolder: string;
+    switch (result.category) {
+      case 'Documents': destFolder = documentsPath; break;
+      case 'Images': destFolder = picturesPath; break;
+      case 'Videos': destFolder = videosPath; break;
+      case 'Finance': destFolder = financePath; break;
+      case 'Archives':
+        // Keep archives in place for now (user can decide later)
+        continue;
+      default:
+        continue; // Skip if category is not mapped
+    }
+
+    // Add dest folder to creates set if it's not a standard system folder (only Finance)
+    if (result.category === 'Finance') {
+      createsSet.add(financePath);
+    }
+
+    const from = path.join(targetFolder, file);
+    // For now, we'll just set to base filename in dest; executeCleanup will handle collisions
+    const to = path.join(destFolder, file);
+    moves.push({
+      from,
+      to,
+      reason: `Classified as ${result.category} ${result.source === 'ai' ? 'via local AI' : 'based on filename and extension'}.`,
+      classificationSource: result.source
+    });
+  }
+  const creates = Array.from(createsSet);
+
+  const warning = isProjectFolder
+    ? 'This looks like a source code project — Automation is meant for messy file folders like Downloads, not project directories, since moving these files could break it.'
+    : undefined;
+
+  const risk = isProjectFolder ? 'high' : 'low';
+
+  return { missionId, root: targetFolder, creates, moves, risk, warning };
 }
 
 async function executeCleanup(plan: FilePlan): Promise<AutomationResult> {
-  const manifest = { missionId: plan.missionId, createdAt: new Date().toISOString(), creates: plan.creates, moves: [] as any[] };
-  for (const dir of plan.creates) await ensureDir(dir);
-  for (const m of plan.moves) {
-    const stat = await fs.stat(m.from);
-    manifest.moves.push({ ...m, checksum: await sha256(m.from), mtimeMs: stat.mtimeMs, atimeMs: stat.atimeMs });
-    await ensureDir(path.dirname(m.to));
-    await fs.rename(m.from, m.to);
-    await fs.utimes(m.to, stat.atime, stat.mtime).catch(() => {});
+  console.log('Main: automation:execute-cleanup handler called! Plan:', plan); // TEMP LOG
+  try {
+    if (plan.warning) {
+      throw new Error(plan.warning);
+    }
+    const manifest = {
+      missionId: plan.missionId,
+      type: 'cleanup' as const,
+      description: `Cleaned up ${plan.moves.length} file(s) from ${path.basename(plan.root)}`,
+      createdAt: new Date().toISOString(),
+      creates: plan.creates,
+      moves: [] as any[]
+    };
+    const skippedFiles: string[] = [];
+    for (const dir of plan.creates) await ensureDir(dir);
+    for (const m of plan.moves) {
+      // Check if file exists first
+      if (!(await exists(m.from))) {
+        console.log('executeCleanup: skipping missing file', m.from);
+        skippedFiles.push(path.basename(m.from));
+        continue;
+      }
+      // Defensive check: skip directories
+      const stat = await fs.stat(m.from);
+      if (stat.isDirectory()) {
+        console.log('executeCleanup: skipping directory', m.from);
+        continue;
+      }
+      
+      // Handle filename collision
+      const destDir = path.dirname(m.to);
+      const uniqueTo = await getUniquePath(destDir, path.basename(m.from));
+      
+      manifest.moves.push({
+        from: m.from,
+        to: uniqueTo,
+        checksum: await sha256(m.from),
+        mtimeMs: stat.mtimeMs,
+        atimeMs: stat.atimeMs
+      });
+      await ensureDir(destDir);
+      await fs.rename(m.from, uniqueTo);
+      await fs.utimes(uniqueTo, stat.atime, stat.mtime).catch(() => {});
+    }
+    
+    // If no files were moved, don't create a manifest
+    if (manifest.moves.length === 0) {
+      await logAudit('automation', 'execute_cleanup_noop', plan.root, 'No files to move — cleanup skipped manifest creation.', 'low');
+      return { missionId: plan.missionId, manifestPath: null, moved: 0, skipped: skippedFiles.length, skippedFiles, created: plan.creates.length };
+    }
+
+    const manifestPath = path.join(manifestsRoot(), `${plan.missionId}.json`);
+    await writeText(manifestPath, JSON.stringify(manifest, null, 2));
+    await logAudit('automation', 'execute_cleanup', plan.root, `Moved ${manifest.moves.length} files with undo manifest ${manifestPath}.`, 'medium');
+    return { missionId: plan.missionId, manifestPath, moved: manifest.moves.length, skipped: skippedFiles.length, skippedFiles, created: plan.creates.length };
+  } catch (e) {
+    console.error('Main: executeCleanup failed!', e);
+    throw e;
   }
-  const manifestPath = path.join(manifestsRoot(), `${plan.missionId}.json`);
-  await writeText(manifestPath, JSON.stringify(manifest, null, 2));
-  await logAudit('automation', 'execute_cleanup', plan.root, `Moved ${manifest.moves.length} files with undo manifest ${manifestPath}.`, 'medium');
-  return { missionId: plan.missionId, manifestPath, moved: manifest.moves.length, created: plan.creates.length };
 }
 
 async function undoMission(missionId: string) {
   const manifestPath = path.join(manifestsRoot(), `${missionId}.json`);
-  const manifest = JSON.parse(await readText(manifestPath));
+  console.log('undoMission called with missionId:', missionId, 'manifestPath:', manifestPath);
+  
+  if (!(await exists(manifestPath))) {
+    throw new Error('Manifest not found.');
+  }
+  
+  let manifest: any;
+  try {
+    manifest = JSON.parse(await readText(manifestPath));
+    console.log('undoMission manifest:', JSON.stringify(manifest, null, 2));
+  } catch {
+    await fs.unlink(manifestPath).catch(() => {});
+    throw new Error('Manifest is corrupt; removed from list.');
+  }
+
+  let canUndo = true;
+  let restored = 0;
 
   // Single-file delete manifest
   if (manifest.type === 'delete') {
-    await ensureDir(path.dirname(manifest.originalPath));
-    await fs.rename(manifest.trashedPath, manifest.originalPath);
-    await fs.unlink(manifestPath).catch(() => {});
-    await logAudit('automation', 'undo_delete', manifest.originalPath, `Restored "${manifest.originalPath}" from Luna trash.`, 'low');
-    return { ok: true, restored: 1, manifestPath };
+    if (!(await exists(manifest.trashedPath))) {
+      console.log('undoMission: trashed path does not exist:', manifest.trashedPath);
+      canUndo = false;
+    } else {
+      await ensureDir(path.dirname(manifest.originalPath));
+      await fs.rename(manifest.trashedPath, manifest.originalPath);
+      restored = 1;
+    }
   }
-
   // Single-file rename/move manifest
-  if (manifest.type === 'rename' || manifest.type === 'move') {
-    if (await exists(manifest.to)) {
+  else if (manifest.type === 'rename' || manifest.type === 'move') {
+    if (!(await exists(manifest.to))) {
+      console.log('undoMission: target path does not exist:', manifest.to);
+      canUndo = false;
+    } else {
       await ensureDir(path.dirname(manifest.from));
       await fs.rename(manifest.to, manifest.from);
+      restored = 1;
     }
-    await fs.unlink(manifestPath).catch(() => {});
-    await logAudit('automation', `undo_${manifest.type}`, manifest.from, `Reversed ${manifest.type} of "${manifest.from}".`, 'low');
-    return { ok: true, restored: 1, manifestPath };
+  }
+  // Bulk cleanup manifest
+  else if (manifest.type === 'cleanup') {
+    let anyFilesExist = false;
+    console.log('undoMission: processing cleanup moves:', manifest.moves);
+    for (const m of [...manifest.moves].reverse()) {
+      console.log('undoMission: checking m.to:', m.to);
+      if (await exists(m.to)) {
+        anyFilesExist = true;
+        console.log('undoMission: found, restoring from', m.to, 'to', m.from);
+        await ensureDir(path.dirname(m.from));
+        await fs.rename(m.to, m.from);
+        await fs.utimes(m.from, new Date(m.atimeMs), new Date(m.mtimeMs)).catch(() => {});
+        restored++;
+      } else {
+        console.log('undoMission: m.to does not exist, skipping', m.to);
+      }
+    }
+    // If no files existed, mark as can't undo
+    canUndo = anyFilesExist;
+    
+    // Try to clean up empty created dirs regardless
+    for (const dir of [...(manifest.creates || [])].sort((a: string, b: string) => b.length - a.length)) {
+      console.log('undoMission: trying to delete created dir:', dir);
+      try { await fs.rmdir(dir); console.log('undoMission: deleted dir:', dir); } catch (e) { 
+        console.log('undoMission: could not delete dir:', dir, e); 
+      }
+    }
   }
 
-  // Bulk cleanup manifest (original format — moves array + creates array)
-  let restored = 0;
-  for (const m of [...manifest.moves].reverse()) {
-    if (await exists(m.to)) {
-      await ensureDir(path.dirname(m.from));
-      await fs.rename(m.to, m.from);
-      await fs.utimes(m.from, new Date(m.atimeMs), new Date(m.mtimeMs)).catch(() => {});
-      restored++;
-    }
+  if (canUndo) {
+    await fs.unlink(manifestPath).catch(() => {});
+    await logAudit('automation', `undo_${manifest.type}`, manifestPath, `Successfully undid ${manifest.type} action, restored ${restored} files.`, 'low');
+    return { ok: true, restored, manifestPath };
+  } else {
+    await fs.unlink(manifestPath).catch(() => {});
+    await logAudit('automation', `remove_unresolvable_manifest`, manifestPath, 'Removed unresolvable manifest from undo history.', 'medium');
+    throw new Error('This action cannot be undone (files no longer exist) — manifest has been removed from list.');
   }
-  for (const dir of [...(manifest.creates || [])].sort((a: string, b: string) => b.length - a.length)) {
-    try { await fs.rmdir(dir); } catch { /* keep non-empty dirs */ }
-  }
-  await logAudit('automation', 'undo_cleanup', manifestPath, `Restored ${restored} files from manifest.`, 'low');
-  return { ok: true, restored, manifestPath };
 }
 
 
@@ -1511,10 +1811,16 @@ async function listUndoableActions(): Promise<UndoableAction[]> {
   for (const file of files) {
     try {
       const raw = JSON.parse(await readText(path.join(manifestsRoot(), file)));
+      // Skip zero-move cleanup manifests
+      if (raw.type === 'cleanup' && (!raw.moves || raw.moves.length === 0)) {
+        // Optionally delete the old manifest here for good measure
+        await fs.unlink(path.join(manifestsRoot(), file)).catch(() => {});
+        continue;
+      }
       const type: UndoableAction['type'] =
         raw.type === 'delete' ? 'delete' :
         raw.type === 'rename' ? 'rename' :
-        raw.type === 'move'   ? 'move'   : 'cleanup';
+        raw.type === 'move' ? 'move' : 'cleanup';
       const description = raw.description ||
         (raw.moves ? `Moved ${raw.moves.length} file(s) (cleanup)` : raw.missionId);
       actions.push({ missionId: raw.missionId, type, description, createdAt: raw.createdAt });
@@ -1527,17 +1833,23 @@ async function undoAllPending(): Promise<{ ok: boolean; undone: number; failed: 
   const actions = await listUndoableActions();
   if (!actions.length) return { ok: true, undone: 0, failed: 0, message: 'Nothing to restore — no undo history found.' };
   let undone = 0;
+  let failed = 0;
   for (const action of actions) {
     try {
       await undoMission(action.missionId);
       undone++;
     } catch (e: any) {
-      await logAudit('automation', 'undo_all_failed', action.missionId, e?.message || String(e), 'medium');
-      return { ok: false, undone, failed: actions.length - undone, message: `Restored ${undone} action(s), then failed on "${action.description}": ${e?.message || String(e)}. Stopped to avoid partial state.` };
+      failed++;
+      await logAudit('automation', 'undo_all_skipped_unresolvable', action.missionId, e?.message || String(e), 'medium');
     }
   }
-  await logAudit('automation', 'undo_all_pending', manifestsRoot(), `Reversed all ${undone} pending action(s).`, 'low');
-  return { ok: true, undone, failed: 0, message: `Restored all ${undone} action(s) successfully.` };
+  await logAudit('automation', 'undo_all_pending', manifestsRoot(), `Reversed ${undone} pending action(s), skipped ${failed} unresolvable action(s).`, 'low');
+  
+  if (failed > 0) {
+    return { ok: true, undone, failed, message: `Restored ${undone} action(s); skipped ${failed} unresolvable action(s) that have been removed from list.` };
+  } else {
+    return { ok: true, undone, failed: 0, message: `Restored all ${undone} action(s) successfully.` };
+  }
 }
 
 async function restoreFromTrash(missionId: string) {
@@ -2007,15 +2319,7 @@ async function tryDeleteFile(command: string): Promise<CommandRouteResult | null
     };
   }
   const target = matches[0];
-  try {
-    const trashedPath = await softTrash(target);
-    fileActionHistory.push({ type: 'delete', from: target, to: trashedPath, label: `deleted ${path.basename(target)}` });
-    await logAudit('automation', 'file_delete', target, `Moved "${target}" to Luna's local trash folder (not permanently deleted). No confirmation was required because this is reversible — say "undo" to restore it.`, 'medium');
-    return { intent: 'file_delete', confidence: 0.9, summary: `Moved "${path.basename(target)}" to Luna's trash. Say "undo" any time to restore it.`, actionTaken: `Trashed file: ${target}` };
-  } catch (e: any) {
-    await logAudit('automation', 'file_delete_failed', target, e?.message || String(e), 'medium');
-    return { intent: 'file_delete', confidence: 0.8, summary: `I found "${path.basename(target)}" but couldn't delete it: ${e?.message || e}.`, actionTaken: `Attempted delete: ${target}` };
-  }
+  return deleteRealFileToTrash(target);
 }
 async function tryRestoreAll(command: string): Promise<CommandRouteResult | null> {
   if (!/\b(restore everything|undo everything|undo all|restore all)\b/i.test(command)) return null;
@@ -2055,28 +2359,7 @@ async function tryMoveOrRename(command: string): Promise<CommandRouteResult | nu
     };
   }
   const source = matches[0];
-  try {
-    if (renameMatch) {
-      const newName = path.basename(destQuery.trim());
-      const dest = path.join(path.dirname(source), newName);
-      await fs.rename(source, dest);
-      fileActionHistory.push({ type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` });
-      await logAudit('automation', 'file_rename', source, `Renamed "${source}" to "${newName}". Say "undo" to reverse it.`, 'low');
-      return { intent: 'file_rename', confidence: 0.9, summary: `Renamed "${path.basename(source)}" to "${newName}". Say "undo" to reverse it.`, actionTaken: `Renamed file to: ${newName}` };
-    } else {
-      const folderKey = Object.keys(KNOWN_FOLDERS).sort((a, b) => b.length - a.length).find(name => destQuery.includes(name));
-      if (!folderKey) return { intent: 'file_move', confidence: 0.7, summary: `I found "${path.basename(source)}" but didn't recognize the destination "${destQuery.trim()}". Try a folder like Desktop, Documents, Downloads, Pictures, Videos or Music.`, actionTaken: `Attempted move: ${cleanedSource}` };
-      const destDir = app.getPath(KNOWN_FOLDERS[folderKey]);
-      const dest = path.join(destDir, path.basename(source));
-      try { await fs.rename(source, dest); } catch { await fs.copyFile(source, dest); await fs.unlink(source); }
-      fileActionHistory.push({ type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` });
-      await logAudit('automation', 'file_move', source, `Moved "${source}" to "${dest}". Say "undo" to reverse it.`, 'low');
-      return { intent: 'file_move', confidence: 0.9, summary: `Moved "${path.basename(source)}" to your ${folderKey} folder. Say "undo" to reverse it.`, actionTaken: `Moved file to: ${folderKey}` };
-    }
-  } catch (e: any) {
-    await logAudit('automation', renameMatch ? 'file_rename_failed' : 'file_move_failed', source, e?.message || String(e), 'low');
-    return { intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.8, summary: `I found "${path.basename(source)}" but the operation failed: ${e?.message || e}.`, actionTaken: `Attempted ${renameMatch ? 'rename' : 'move'}: ${cleanedSource}` };
-  }
+  return moveOrRenameRealFile(source, destQuery.trim(), !!renameMatch);
 }
 async function tryOpenFolder(command: string): Promise<CommandRouteResult | null> {
   const c = command.toLowerCase();
@@ -2183,8 +2466,8 @@ async function routeCommand(command: string): Promise<CommandRouteResult> {
     return { intent: 'research_to_presentation', confidence: 0.91, summary: r.summary, actionTaken: 'Ran Research-to-Presentation in Artifact Studio', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/organize|clean|cleanup|downloads|files/.test(c)) {
-    const plan = await planCleanup();
-    return { intent: 'safe_file_cleanup_plan', confidence: 0.88, summary: `Prepared a safe cleanup plan for ${plan.moves.length} files. Luna did not move anything yet; approval is required in Automation.`, actionTaken: 'Generated cleanup preview only', plan, trace: [{ time: now(), title: 'Generated cleanup plan', detail: `${plan.moves.length} file moves proposed; risk ${plan.risk}; undo manifest will be created on execution.` }] };
+    const plan = await planFolderCleanup(app.getPath('downloads'));
+    return { intent: 'safe_file_cleanup_plan', confidence: 0.88, summary: `Prepared a safe cleanup plan for ${plan.moves.length} files in your Downloads folder. Luna did not move anything yet; approval is required in Automation.`, actionTaken: 'Generated cleanup preview only', plan, trace: [{ time: now(), title: 'Generated cleanup plan', detail: `${plan.moves.length} file moves proposed; risk ${plan.risk}; undo manifest will be created on execution.` }] };
   }
   if (/vault|knowledge|evidence|ask documents|search documents/.test(c)) {
     await indexDemoVault();
@@ -2461,7 +2744,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('memory:seed', seedMemoryNow);
   ipcMain.handle('context:build', (_e, query: string) => buildContext(query));
   ipcMain.handle('ai:chat-plus', (_e, messages: ChatMessage[]) => chatPlus(messages));
-  ipcMain.handle('automation:plan-cleanup', planCleanup);
+  ipcMain.handle('automation:plan-cleanup', (_e, folderPath: string) => planFolderCleanup(folderPath));
   ipcMain.handle('automation:execute-cleanup', (_e, plan) => executeCleanup(plan));
   ipcMain.handle('automation:undo', (_e, missionId) => undoMission(missionId));
   ipcMain.handle('automation:list-undoable', () => listUndoableActions());
@@ -2489,7 +2772,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:save', (_e, settings: Partial<LunaSettings>) => saveSettings(settings));
   ipcMain.handle('database:status', databaseStatus);
   ipcMain.handle('ui:open-command-palette', () => openMainCommandPalette());
-  ipcMain.handle('shell:reveal', (_e, p: string) => shell.showItemInFolder(p));
+  ipcMain.handle('shell:reveal', async (_e, p: string) => {
+    if (await exists(p)) {
+      shell.showItemInFolder(p);
+    } else {
+      throw new Error('This manifest no longer exists');
+    }
+  });
   ipcMain.handle('chat:list-sessions', () => listChatSessions());
   ipcMain.handle('chat:create-session', () => createChatSession());
   ipcMain.handle('chat:get-messages', (_e, sessionId: string) => getChatMessages(sessionId));

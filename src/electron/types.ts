@@ -37,15 +37,23 @@ export type PrivacyEvent = { time: string; action: string; target: string; detai
 export type FilePlan = {
   missionId: string;
   root: string;
-  moves: { from: string; to: string; reason: string }[];
+  moves: Array<{
+    from: string;
+    to: string;
+    reason: string;
+    classificationSource: 'rule' | 'ai' | 'uncertain';
+  }>;
   creates: string[];
   risk: 'low' | 'medium' | 'high';
+  warning?: string;
 };
 
 export type AutomationResult = {
   missionId: string;
-  manifestPath: string;
+  manifestPath: string | null;
   moved: number;
+  skipped: number;
+  skippedFiles: string[];
   created: number;
 };
 
