@@ -18,6 +18,8 @@ import si from 'systeminformation';
 import type { AutomationResult, ChatMessage, ChatResult, FilePlan, HealthStatus, MissionResult, MissionTraceItem, PrivacyEvent, ResourceSnapshot, LunaSkill, SkillRunResult, Artifact, VaultState, VaultDoc, VaultChunk, VaultSearchResult, VaultAnswer, MemoryState, MemoryItem, MemorySearchResult, ContextBuildResult, ConversationCompressionResult, ModelBenchmarkResult, ModelRecommendation, FallbackDrillResult, LensSnapshot, CommandRouteResult, AuditEvent, TrustExportResult, AttachmentState, AttachmentItem, LunaSettings, DatabaseStatus } from './types.js';
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); });
+process.on('unhandledRejection', (reason) => { console.error('Unhandled Rejection:', reason); });
 function iconPath() { return app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(app.getAppPath(), 'assets/icon.png'); }
 let mainWindow: BrowserWindow | null = null;
 let orbWindow: BrowserWindow | null = null;
@@ -303,8 +305,14 @@ async function ensureInitialData() {
 }
 
 async function getResources(): Promise<ResourceSnapshot> {
-  const load = await si.currentLoad().catch(() => ({ currentLoad: 0 } as any));
-  const graphics = await si.graphics().catch(() => ({ controllers: [] } as any));
+  const load = await Promise.race([
+    si.currentLoad().catch(() => ({ currentLoad: 0 } as any)),
+    new Promise<any>(r => setTimeout(() => r({ currentLoad: 0 }), 3000))
+  ]);
+  const graphics = await Promise.race([
+    si.graphics().catch(() => ({ controllers: [] } as any)),
+    new Promise<any>(r => setTimeout(() => r({ controllers: [] }), 3000))
+  ]);
   return {
     cpuLoad: Math.round(load.currentLoad || 0),
     memoryUsedGb: Number(((os.totalmem() - os.freemem()) / 1024 ** 3).toFixed(2)),
@@ -319,7 +327,10 @@ async function checkOllama() {
     return { ok: false, models: [], error: 'Forced offline by test environment.' };
   }
   try {
-    const res = await fetch('http://127.0.0.1:11434/api/tags');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json: any = await res.json();
     return { ok: true, models: (json.models || []).map((m: any) => m.name) };
@@ -1812,7 +1823,10 @@ async function restoreFromTrash(missionId: string) {
 async function getActiveWindowSafe(): Promise<LensSnapshot['activeWindow']> {
   try {
     const mod: any = require('active-win');
-    const aw = await (mod.default ? mod.default() : mod());
+    const aw = await Promise.race([
+      (mod.default ? mod.default() : mod()),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
+    ]);
     if (!aw) return { title: 'Unavailable', owner: 'Unknown' };
     return { title: aw.title, owner: aw.owner?.name, app: aw.owner?.name };
   } catch (e: any) {
@@ -1821,7 +1835,10 @@ async function getActiveWindowSafe(): Promise<LensSnapshot['activeWindow']> {
 }
 async function getRunningAppsSafe(): Promise<string[]> {
   try {
-    const processes = await si.processes();
+    const processes = await Promise.race([
+      si.processes(),
+      new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+    ]);
     const names = new Map<string, number>();
     for (const p of processes.list || []) {
       const name = String(p.name || '').trim();

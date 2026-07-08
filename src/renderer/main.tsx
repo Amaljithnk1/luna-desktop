@@ -1094,9 +1094,17 @@ function SettingsPage({ settings, setSettings, pushLog }: { settings: any; setSe
 function App() {
   const [tab, setTab] = useState<Tab>('showcase'); const [health, setHealth] = useState<any>(); const [settings, setSettings] = useState<any>(); const [log, setLog] = useState<string[]>([]); const [paletteOpen, setPaletteOpen] = useState(false);
   const assistantName = settings?.assistantName || 'Luna';
-  const refresh = async () => setHealth(await window.luna.health());
-  const loadSettings = async () => setSettings(await window.luna.settingsGet());
-  useEffect(() => { refresh(); loadSettings(); const id = setInterval(refresh, 2500); return () => clearInterval(id); }, []);
+  const refreshingRef = React.useRef(false);
+  const refresh = async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    try { setHealth(await window.luna.health()); } catch (e) { console.error('Health check failed:', e); }
+    refreshingRef.current = false;
+  };
+  const loadSettings = async () => {
+    try { setSettings(await window.luna.settingsGet()); } catch (e) { console.error('Settings load failed:', e); }
+  };
+  useEffect(() => { refresh(); loadSettings(); const id = setInterval(refresh, 15000); return () => clearInterval(id); }, []);
   useEffect(() => {
     if (!window.luna?.onCommandPalette) {
       console.warn('Luna bridge unavailable: command palette shortcut disabled');
