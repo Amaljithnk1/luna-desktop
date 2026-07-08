@@ -1,31 +1,29 @@
-# Luna — Local AI Desktop Layer
+# Luna — Local AI Desktop Companion
 
-Luna is a Windows-first desktop AI assistant that acts as a private local AI operating layer for the user's computer.
-
-It is designed to combine conversation, local context, memory, document understanding, artifact generation, safe desktop automation, reusable skills, voice/command access, and privacy forensics into one runnable desktop app.
+Luna is a Windows-first desktop AI assistant that acts as a private local AI operating layer for your computer. It combines conversation, local context, memory, document understanding, artifact generation, safe desktop automation, reusable skills, voice/command access, and privacy forensics into one runnable desktop app — fully offline-capable.
 
 ## Highlights
 
-- AI Demo Presenter Mode with narration, tab switching, autoplay and optional speech
-- Guided Judge Showcase mode for a one-click product walkthrough
-- Always-on-top Luna Orb companion window
-- Command Palette with global shortcut `Ctrl/Cmd + Shift + L`
-- Intent-based Command Router
-- Local Ollama chat with transparent fallback mode
-- SQLite-backed data layer for audit, memory, vault, skills and settings metadata
-- Onboarding and Settings
-- Luna Voice with push-to-talk/transcript command mode
-- Unified Attachments for PDF/DOCX/TXT/MD/CSV/JSON/images with OCR support
-- Mission Hub: Meeting Notes, Invoice/Expense, Study Pack and Codebase Explainer
-- Job Application Mission using imported resume/JD/portfolio attachments when available
-- Artifact Studio for Research-to-Presentation exports
-- Knowledge Vault with embedding retrieval when available and keyword fallback
-- Personal Memory with adaptive context
-- Luna Lens for bounded desktop context and manual screenshot/image OCR
-- Safe file cleanup with preview, permission approval, manifest logging and full undo
-- Luna Skill Creator for reusable local workflows
-- Model Inspector with recommendation, benchmark and fallback drill
-- Trust Center with audit log, network counter, SQLite status, trust export and reset controls
+- **Guided Demo** — One-click end-to-end proof path: privacy proof, skills, artifact generation, evidence Q&A, reversible automation, skill creation, and adaptive memory.
+- **Always-on-top Luna Orb** companion window with global shortcut `Ctrl/Cmd + Shift + L`
+- **Intent-based Command Router** — natural-language command palette that routes to skills, vault, lens, automation, or model inspector.
+- **Local Ollama chat** with transparent fallback mode when Ollama is unavailable.
+- **Skill Creator** — Generate, save, and run reusable local workflows from plain English. Built-in default skills:
+  - Summarize My Files
+  - Analyze Resume Fit
+  - Summarize Meeting Transcript
+  - Extract Invoice Data
+  - Generate Study Pack
+  - Explain Codebase Architecture
+  - Research to Presentation
+- **Knowledge Vault** — Local RAG layer: index PDF/DOCX/TXT/MD/CSV/JSON files, search with embeddings (when available) or keyword fallback, and ask questions with evidence.
+- **Personal Memory** with adaptive context — stores reviewable local memories, retrieves relevant ones into prompts.
+- **Artifact Generation** — Export to PDF, DOCX, PPTX, HTML, Markdown, CSV, JSON, ICS, and ZIP — all generated locally.
+- **Luna Lens** — Permission-bounded desktop context capture (active window, running apps) with optional manual screenshot/image OCR.
+- **Safe File Automation** — Preview file cleanup plans, approve with permission, full undo via manifests.
+- **Trust Center** — External network counter, audit log, SQLite database status, trust data export, and full data reset.
+- **Luna Voice** — Push-to-talk with on-device transcription via open Whisper model (one-time ~75MB download, fully offline after).
+- **SQLite-backed data layer** for audit, memory, vault, skills, chat sessions, and settings metadata.
 
 ## Run locally
 
@@ -36,7 +34,7 @@ npm run dev
 
 ## Optional local model setup
 
-Install Ollama, then run:
+Install [Ollama](https://ollama.com), then run:
 
 ```bash
 ollama serve
@@ -101,22 +99,18 @@ Fastest option:
 
 1. Open Luna.
 2. Complete or skip onboarding.
-3. Click **AI Presenter** in the sidebar.
-4. Use **Auto play all** or run each step manually.
-5. End in **Trust Center** to show audit logs, SQLite status, data export and reset controls.
+3. Click **Guided Demo** in the sidebar and click **Run full showcase**.
+4. End in **Trust Center** to show audit logs, SQLite status, data export and reset controls.
 
 Manual path:
 
 1. Show the top proof strip: model/fallback status, external request counter, CPU/RAM.
 2. Click the always-on-top Luna Orb or press `Ctrl/Cmd + Shift + L`.
-3. Run: `Create a presentation from my local research notes`.
-4. Go to **Attachments** and import demo files or user files.
-5. Run **Job Mission** to generate PDF/DOCX/ZIP.
-6. Run **Artifact Studio** to generate PPTX/PDF/HTML/ZIP.
-7. Run **Automation** to preview file moves, approve, then undo.
-8. Show **Knowledge Vault** evidence-based Q&A.
-9. Show **Luna Skill Creator** and **Mission Hub**.
-10. Close with **Trust Center**.
+3. Try: `Create a presentation from my local research notes`.
+4. Open **Skill Creator** and run a built-in skill like **Summarize My Files** or **Extract Invoice Data**.
+5. Go to **Knowledge Vault**, index demo docs, and ask a question with evidence.
+6. Run **Automation** to preview file cleanup, approve, then undo.
+7. Explore **Luna Lens**, **Memory**, and **Trust Center**.
 
 ## Demo assets
 
@@ -134,39 +128,51 @@ These are included in packaged builds as extra resources.
 
 ## Main sections
 
-- Judge Showcase
+- Guided Demo
 - Capabilities
-- Command
+- Chat
 - Voice
-- Attachments
-- Mission Hub
-- Job Mission
-- Artifact Studio
 - Luna Lens
 - Knowledge Vault
 - Memory
 - Automation
-- Model Inspector
+- Skill Creator
 - Trust Center
 - Settings
 - Help
-- Luna Skill Creator
+
+## Architecture
+
+Luna is structured as an Electron app with two layers:
+
+- **Backend (main process, `src/electron/main.ts`)**: All file I/O, document extraction (PDF/DOCX/TXT/OCR via pdf-parse, mammoth, tesseract.js), AI inference (Ollama or fallback), SQLite storage, file automation, skill execution, and IPC handlers. This is the only process with filesystem and network access.
+- **Preload bridge (`src/electron/preload.cts`)**: Exposes a typed API surface (`window.luna.*`) to the renderer via `contextBridge` — no direct Node.js access in the renderer.
+- **Renderer (`src/renderer/main.tsx`)**: React single-page app with sidebar navigation, chat sessions, command palette, voice UI, and all visual components. Communicates exclusively through the preload bridge.
+
+Key backend utilities that serve multiple features:
+
+- `readDocumentAny()` — Generic file reader supporting `.txt`, `.md`, `.csv`, `.json`, `.log`, `.pdf`, `.docx`
+- `ocrImage()` — Tesseract.js OCR for images
+- `importAttachments()` — File copy + extraction pipeline for imported files
+- `readAttachments()` / `writeAttachments()` — JSON-backed metadata store for imported file paths (used by Skill Creator's quick-select picker)
 
 ## Data and privacy
 
-Luna stores local app data inside its local workspace, including:
+Luna stores local app data inside its local workspace (`demo-workspace/`), including:
 
-- `luna.db`
-- audit log
-- memories
-- vault chunks
-- skills
-- settings
-- attachments metadata
-- generated artifacts
-- undo manifests
+- `luna.db` — SQLite database with audit events, memories, vault docs/chunks, skills, settings, chat sessions, artifacts
+- `audit-log.json` — Flat audit log
+- `memory.json` — Personal memories
+- `vault.json` — Knowledge Vault chunks and embeddings
+- `skills.json` — Saved skills
+- `settings.json` — User preferences
+- `attachments.json` — Imported file metadata
+- `lens-snapshots.json` — Luna Lens history
+- `artifacts/` — Generated PDF, DOCX, PPTX, HTML, MD, ZIP files
+- `manifests/` — Undo manifests for file automation
+- `attachments/` — Copies of imported files
 
-Trust Center lets the user inspect activity, export trust data, and reset local data.
+Trust Center lets the user inspect all activity, export a complete trust/audit package as ZIP, and reset all local data.
 
 ## QA and release commands
 
@@ -201,3 +207,4 @@ powershell -ExecutionPolicy Bypass -File scripts/build-windows-release.ps1
 - `nomic-embed-text` is recommended for semantic retrieval.
 - If an embedding model is missing, Luna uses keyword fallback.
 - If speech recognition is unavailable, Voice mode still works through transcript mode.
+- Imported files are copied into Luna's local workspace; the Skill Creator's input picker can quick-select previously imported files or browse for new ones.
