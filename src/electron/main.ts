@@ -1272,7 +1272,24 @@ async function generateSkill(description: string): Promise<LunaSkill> {
 }
 
 async function listSkills(): Promise<LunaSkill[]> {
-  if (!(await exists(skillsPath()))) await writeText(skillsPath(), JSON.stringify(defaultSkills(), null, 2));
+  if (!(await exists(skillsPath()))) {
+    await writeText(skillsPath(), JSON.stringify(defaultSkills(), null, 2));
+  } else {
+    try {
+      const current = JSON.parse(await readText(skillsPath()));
+      const defaults = defaultSkills();
+      let modified = false;
+      for (const def of defaults) {
+        if (!current.some((s: any) => s.id === def.id)) {
+          current.push(def);
+          modified = true;
+        }
+      }
+      if (modified) {
+        await writeText(skillsPath(), JSON.stringify(current, null, 2));
+      }
+    } catch {}
+  }
   await writeText(vaultPath(), JSON.stringify({ docs: [], chunks: [], updatedAt: new Date().toISOString() }, null, 2));
   await seedMemoryNow();
   await writeText(lensPath(), JSON.stringify([], null, 2));
@@ -1755,8 +1772,9 @@ async function undoMission(missionId: string) {
     await logAudit('automation', `undo_${manifest.type}`, manifestPath, `Successfully undid ${manifest.type} action, restored ${restored} files.`, 'low');
     return { ok: true, restored, manifestPath };
   } else {
-    await logAudit('automation', `undo_${manifest.type}_failed`, manifestPath, `Failed to undo ${manifest.type} action; files do not exist at target paths.`, 'medium');
-    throw new Error('This action cannot be undone (files no longer exist at target paths). The manifest has been preserved in your history.');
+    await fs.unlink(manifestPath).catch(() => {});
+    await logAudit('automation', `undo_${manifest.type}_resolved`, manifestPath, `Action already resolved, removed stale manifest.`, 'low');
+    return { ok: true, restored: 0, manifestPath, message: 'Already resolved, entry removed.' };
   }
 }
 
@@ -1800,8 +1818,8 @@ async function undoAllPending(): Promise<{ ok: boolean; undone: number; failed: 
   let failed = 0;
   for (const action of actions) {
     try {
-      await undoMission(action.missionId);
-      undone++;
+      const res = await undoMission(action.missionId);
+      if (res.restored > 0) undone++;
     } catch (e: any) {
       failed++;
       await logAudit('automation', 'undo_all_skipped_unresolvable', action.missionId, e?.message || String(e), 'medium');
@@ -2042,7 +2060,6 @@ async function trySearchFiles(command: string): Promise<CommandRouteResult | nul
   const list = matches.slice(0, 8).map(p => `• ${p}`).join('\n');
   return { intent: 'file_search', confidence: 0.9, summary: `Found ${matches.length} file(s) matching "${query}":\n${list}`, actionTaken: `Searched for: ${query}`, extra: matches };
 }
-type LastFileAction = { type: 'delete' | 'move' | 'rename'; from: string; to: string; label: string };
 
 export type RealFileMatch = { path: string; name: string };
 export type PendingClarification = {
@@ -2050,7 +2067,6 @@ export type PendingClarification = {
   candidates: RealFileMatch[];
   newName?: string;
 };
-let fileActionHistory: LastFileAction[] = [];
 function lunaTrashDir() { return path.join(app.getPath('userData'), 'luna-trash'); }
 function lunaTrashFolder() { return path.join(demoRoot(), 'trash'); }
 async function softTrash(filePath: string): Promise<string> {
@@ -2079,7 +2095,6 @@ async function deleteRealFileToTrash(filePath: string): Promise<CommandRouteResu
     await ensureDir(manifestsRoot());
     await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
 
-    fileActionHistory.push({ type: 'delete', from: filePath, to: trashedPath, label: `deleted ${path.basename(filePath)}` });
     await logAudit('automation', 'file_delete', filePath, `Moved "${filePath}" to Luna trash folder. Manifest saved. Reversible via undo.`, 'medium');
     return { intent: 'file_delete', confidence: 0.95, summary: `Moved "${path.basename(filePath)}" to Luna's trash. Say "undo" any time to restore it.`, actionTaken: `Trashed file: ${filePath}`, extra: { missionId } };
   } catch (e: any) {
@@ -2100,7 +2115,6 @@ async function moveOrRenameRealFile(source: string, destQuery: string, isRename:
       await ensureDir(manifestsRoot());
       await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
 
-      fileActionHistory.push({ type: 'rename', from: source, to: dest, label: `renamed ${path.basename(source)} to ${newName}` });
       await logAudit('automation', 'file_rename', source, `Renamed "${source}" to "${newName}". Say "undo" to reverse it.`, 'low');
       return { intent: 'file_rename', confidence: 0.95, summary: `Renamed "${path.basename(source)}" to "${newName}". Say "undo" to reverse it.`, actionTaken: `Renamed file to: ${newName}`, extra: { missionId } };
     } else {
@@ -2115,7 +2129,6 @@ async function moveOrRenameRealFile(source: string, destQuery: string, isRename:
       await ensureDir(manifestsRoot());
       await writeText(path.join(manifestsRoot(), `${missionId}.json`), JSON.stringify(manifest, null, 2));
 
-      fileActionHistory.push({ type: 'move', from: source, to: dest, label: `moved ${path.basename(source)} to ${folderKey}` });
       await logAudit('automation', 'file_move', source, `Moved "${source}" to "${dest}". Say "undo" to reverse it.`, 'low');
       return { intent: 'file_move', confidence: 0.95, summary: `Moved "${path.basename(source)}" to your ${folderKey} folder. Say "undo" to reverse it.`, actionTaken: `Moved file to: ${folderKey}`, extra: { missionId } };
     }
@@ -2151,36 +2164,30 @@ function resolveAgainstCandidates(reply: string, candidates: RealFileMatch[]): s
 }
 
 async function undoLastFileAction(): Promise<{ ok: boolean; message: string }> {
-  const action = fileActionHistory.pop();
-  if (!action) return { ok: false, message: 'There is no recent file action to undo.' };
-  const { from, to, label } = action;
+  const actions = await listUndoableActions();
+  if (actions.length === 0) return { ok: false, message: 'There is no recent file action to undo.' };
+  
+  const action = actions[0];
   try {
-    await fs.rename(to, from);
-    await logAudit('automation', 'file_action_undo', from, `Reversed previous action ("${label}"), restoring "${from}". ${fileActionHistory.length} earlier action(s) remain undoable.`, 'low');
-    const remaining = fileActionHistory.length;
-    return { ok: true, message: `Undid it — restored "${path.basename(from)}".${remaining > 0 ? ` You have ${remaining} earlier action${remaining === 1 ? '' : 's'} you can still undo one at a time, or say "restore everything" to reverse all of them.` : ''}` };
+    const result = await undoMission(action.missionId);
+    const remaining = actions.length - 1;
+    let msg = 'Undid it.';
+    if ((result as any).message) {
+      msg = (result as any).message;
+    } else if (action.type === 'delete') {
+      msg = 'Undid it — restored deleted file.';
+    } else if (action.type === 'rename') {
+      msg = 'Undid it — restored renamed file.';
+    } else if (action.type === 'move') {
+      msg = 'Undid it — restored moved file.';
+    } else if (action.type === 'cleanup') {
+      msg = 'Undid it — restored cleanup files.';
+    }
+    
+    return { ok: true, message: `${msg}${remaining > 0 ? ` You have ${remaining} earlier action${remaining === 1 ? '' : 's'} you can still undo one at a time, or say "restore everything" to reverse all of them.` : ''}` };
   } catch (e: any) {
-    fileActionHistory.push(action);
     return { ok: false, message: `Couldn't undo: ${e?.message || e}` };
   }
-}
-async function restoreAllFileActions(): Promise<{ ok: boolean; message: string }> {
-  if (fileActionHistory.length === 0) return { ok: false, message: 'There is nothing tracked to restore — no file actions since Luna started.' };
-  const total = fileActionHistory.length;
-  let restored = 0;
-  const failures: string[] = [];
-  while (fileActionHistory.length > 0) {
-    const action = fileActionHistory.pop()!;
-    try {
-      await fs.rename(action.to, action.from);
-      restored++;
-    } catch (e: any) {
-      failures.push(`${path.basename(action.from)}: ${e?.message || e}`);
-    }
-  }
-  await logAudit('automation', 'file_action_restore_all', lunaTrashDir(), `Restored ${restored} of ${total} tracked file action(s) in one bulk undo.`, 'low');
-  const failureNote = failures.length ? ` ${failures.length} couldn't be restored: ${failures.join('; ')}.` : '';
-  return { ok: failures.length === 0, message: `Restored ${restored} of ${total} recent file action(s) back to their original state.${failureNote}` };
 }
 async function tryDeleteFile(command: string): Promise<CommandRouteResult | null> {
   const c = command.toLowerCase();
@@ -2210,7 +2217,7 @@ async function tryDeleteFile(command: string): Promise<CommandRouteResult | null
 }
 async function tryRestoreAll(command: string): Promise<CommandRouteResult | null> {
   if (!/\b(restore everything|undo everything|undo all|restore all)\b/i.test(command)) return null;
-  const result = await restoreAllFileActions();
+  const result = await undoAllPending();
   return { intent: 'file_restore_all', confidence: 0.9, summary: result.message, actionTaken: result.ok ? 'Restored all tracked file actions' : 'Bulk restore incomplete or nothing to restore' };
 }
 async function tryUndoFileAction(command: string): Promise<CommandRouteResult | null> {
