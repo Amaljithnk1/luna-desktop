@@ -166,7 +166,7 @@ function CapabilityCenter({ setTab, assistantName }: { setTab: (t: Tab)=>void; a
     { title: 'Extensibility', tab: 'skills' as Tab, items: ['plain-English skill generation', 'safe schema-based tools', 'saved local skills', 'executable built-in skills'] }
   ];
   return <div className="grid two">
-    <Card title="Luna Capability Center" icon={<Sparkles size={18}/>}>
+    <Card title={`${assistantName} Capability Center`} icon={<Sparkles size={18}/>}>
       <p className="bigcopy">A single view of what {assistantName} can do. This is useful for quickly understanding the product surface area.</p>
       <div className="capability-score"><div><b>8</b><span>product pillars</span></div><div><b>50+</b><span>visible capabilities</span></div><div><b>0</b><span>paid APIs required</span></div></div>
       <p className="hint">Each section links to the relevant working {assistantName} area.</p>
@@ -404,7 +404,7 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
   const statusLabel = recording ? 'Listening…' : transcribing ? (modelStatus?.ready ? 'Transcribing locally…' : 'Downloading local speech model (one-time, ~75MB)…') : routing ? 'Thinking…' : speaking ? 'Speaking…' : 'Ready';
   const orbState = recording ? 'listening' : (transcribing || routing) ? 'thinking' : speaking ? 'speaking' : '';
   return <div className="grid two">
-    <Card title="Luna Voice" icon={<Sparkles size={18}/>}> 
+    <Card title={`${assistantName} Voice`} icon={<Sparkles size={18}/>}> 
       <p className="bigcopy">Push-to-talk records locally and transcribes fully on-device with an open Whisper model — audio never leaves this machine.</p><p className="hint">{assistantName} prefers a feminine system voice when available, with safe fallback to the default system voice.</p>
       <div className="voice-orb"><div className={`voice-core ${orbState}`}><Sparkles size={42}/></div><span>{statusLabel}</span></div>
       <div className="row-actions"><button type="button" className="primary" onClick={start} disabled={!supported || recording || transcribing}>Push to talk</button><button type="button" onClick={stop} disabled={!recording}>Stop</button><button type="button" onClick={()=>run()} disabled={!transcript.trim() || routing || speaking}>Submit typed text</button><label className="toggle"><input type="checkbox" checked={speakBack} onChange={e=>setSpeakBack(e.target.checked)}/> Speak response</label></div>
@@ -432,11 +432,11 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
 function LunaLens({ pushLog, assistantName }: { pushLog: (s: string)=>void; assistantName: string }) {
   const [snapshot, setSnapshot] = useState<any>(null);
   const [busy, setBusy] = useState('');
-  const capture = async () => { setBusy('Capturing desktop context…'); const s = await window.luna.lensContext(); setSnapshot(s); setBusy(''); pushLog('Luna Lens captured desktop context'); };
-  const importImage = async () => { setBusy('Importing screenshot/image and running OCR…'); const s = await window.luna.lensImportImage(); if (s) setSnapshot(s); setBusy(''); pushLog('Luna Lens imported selected visual context'); };
-  const explain = async () => { if (!snapshot) return; setBusy('Explaining local context…'); const s = await window.luna.lensExplain(snapshot); setSnapshot(s); setBusy(''); pushLog('Luna Lens generated context explanation'); };
+  const capture = async () => { setBusy('Capturing desktop context…'); const s = await window.luna.lensContext(); setSnapshot(s); setBusy(''); pushLog(`${assistantName} Lens captured desktop context`); };
+  const importImage = async () => { setBusy('Importing screenshot/image and running OCR…'); const s = await window.luna.lensImportImage(); if (s) setSnapshot(s); setBusy(''); pushLog(`${assistantName} Lens imported selected visual context`); };
+  const explain = async () => { if (!snapshot) return; setBusy('Explaining local context…'); const s = await window.luna.lensExplain(snapshot); setSnapshot(s); setBusy(''); pushLog(`${assistantName} Lens generated context explanation`); };
   return <div className="grid two">
-    <Card title="Luna Lens" icon={<Sparkles size={18}/>}> 
+    <Card title={`${assistantName} Lens`} icon={<Sparkles size={18}/>}> 
       <p className="bigcopy">Permission-bounded desktop understanding. Capture app/window context, import a screenshot manually, run OCR, then ask {assistantName} what you are looking at.</p>
       <div className="row-actions"><button type="button" className="primary" onClick={capture} disabled={!!busy}>Capture desktop context</button><button type="button" onClick={importImage} disabled={!!busy}>Import screenshot/image</button><button type="button" onClick={explain} disabled={!snapshot || !!busy}>Explain this</button></div>
       {busy && <p className="hint">{busy}</p>}
@@ -1026,7 +1026,7 @@ function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boole
   const suggestions = ['Prepare my job application package', 'Create a presentation from my local research notes', `Ask the vault what ${assistantName} proves about privacy`, 'Organize my demo Downloads safely', 'Run the codebase explainer skill', 'Process meeting notes', 'Extract an invoice', 'Create a study pack', 'What am I doing right now?', 'Benchmark my local AI models'];
   return <div className="palette-backdrop" onMouseDown={onClose}>
     <div className="palette" onMouseDown={e=>e.stopPropagation()}>
-      <div className="palette-head"><div><b>Luna Command Palette</b><span>Ctrl/Cmd + Shift + L</span></div><button type="button" className="ghost" onClick={onClose}>Close</button></div>
+      <div className="palette-head"><div><b>{assistantName} Command Palette</b><span>Ctrl/Cmd + Shift + L</span></div><button type="button" className="ghost" onClick={onClose}>Close</button></div>
       {pendingClarification && <div className="palette-clarification"><Badge tone="warn">Waiting for clarification</Badge><span>Reply with a number, "the first one", or part of the filename to pick one — or type a new command to cancel.</span></div>}
       <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder={pendingClarification ? `Which one? (e.g. "the first one", "the resume one")` : `Tell ${assistantName} what to do…`} onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button type="button" onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
       <div className="palette-suggestions">{suggestions.map(s=><button type="button" key={s} onClick={()=>{setCmd(s); run(s);}} disabled={busy}>{s}</button>)}</div>
@@ -1113,7 +1113,7 @@ function App() {
     <button type="button" className={tab==='capabilities'?'active':''} onClick={()=>setTab('capabilities')}>Capabilities</button>
     <button type="button" className={tab==='chat'?'active':''} onClick={()=>setTab('chat')}>Chat</button>
     <button type="button" className={tab==='voice'?'active':''} onClick={()=>setTab('voice')}>Voice</button>
-    <button type="button" className={tab==='lens'?'active':''} onClick={()=>setTab('lens')}>Luna Lens</button>
+    <button type="button" className={tab==='lens'?'active':''} onClick={()=>setTab('lens')}>{assistantName} Lens</button>
     <button type="button" className={tab==='vault'?'active':''} onClick={()=>setTab('vault')}>Knowledge Vault</button>
     <button type="button" className={tab==='memory'?'active':''} onClick={()=>setTab('memory')}>Memory</button>
     <button type="button" className={tab==='automation'?'active':''} onClick={()=>setTab('automation')}>Automation</button>
@@ -1145,9 +1145,9 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
         <div className="fatal-card">
           <div className="orb big"><Sparkles size={32}/></div>
           <h1>Luna recovered from a UI error</h1>
-          <p>The app did not crash completely. You can reload Luna and continue the demo.</p>
+          <p>The app did not crash completely. You can reload and continue the demo.</p>
           <pre>{this.state.error}</pre>
-          <div className="row-actions"><button type="button" className="primary" onClick={() => location.reload()}>Reload Luna</button></div>
+          <div className="row-actions"><button type="button" className="primary" onClick={() => location.reload()}>Reload</button></div>
         </div>
       </div>;
     }

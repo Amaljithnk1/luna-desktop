@@ -2485,13 +2485,19 @@ function installNetworkMonitor() {
 }
 
 async function createWindow() {
+  const settings = await getSettings().catch(() => defaultSettings());
+  const assistantName = settings?.assistantName || 'Luna';
   mainWindow = new BrowserWindow({
     width: 1280, height: 820, minWidth: 1080, minHeight: 720,
-    title: 'Luna', backgroundColor: '#080914', icon: iconPath(),
+    title: assistantName, backgroundColor: '#080914', icon: iconPath(),
     webPreferences: { preload: path.join(app.getAppPath(), 'dist-electron/preload.cjs'), contextIsolation: true, nodeIntegration: false }
   });
   if (isDev) await mainWindow.loadURL('http://127.0.0.1:5173'); else await mainWindow.loadFile(path.join(app.getAppPath(), 'dist/index.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { 
+    mainWindow = null; 
+    if (orbWindow && !orbWindow.isDestroyed()) orbWindow.close();
+    if (process.platform !== 'darwin') app.quit();
+  });
 }
 
 async function openMainCommandPalette() {
