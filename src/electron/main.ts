@@ -572,38 +572,7 @@ async function clearAttachments(): Promise<AttachmentState> {
   await logAudit('file', 'clear_attachments', attachmentsRoot(), 'Cleared imported attachments.', 'low');
   return state;
 }
-async function attachmentsToVault(): Promise<VaultState> {
-  const state = await readAttachments();
-  const vault = await addDocsToVault(state.items.map(i => i.storedPath));
-  await logAudit('vault', 'attachments_to_vault', attachmentsRoot(), `Indexed ${state.items.length} attachment(s) into Knowledge Vault.`, 'low');
-  return vault;
-}
-async function summarizeAttachments(): Promise<MissionResult> {
-  const state = await readAttachments();
-  const trace: MissionTraceItem[] = [];
-  const privacy: PrivacyEvent[] = [];
-  if (!state.items.length) return { summary: 'No attachments imported yet.', artifacts: [], trace: [], privacy: [] };
-  const combined = state.items.map((i, idx) => `ATTACHMENT ${idx+1}: ${i.name}\n${i.textPreview}`).join('\n\n---\n\n');
-  state.items.forEach(i => privacy.push({ time: now(), action: 'read_attachment', target: i.storedPath, detail: `Used extracted text preview from ${i.name}.` }));
-  trace.push({ time: now(), title: 'Loaded attachments', detail: `Prepared ${state.items.length} attachment(s) for local summarization.` });
-  const ai = await chatPlus([{ role: 'user', content: `Summarize these attachments. Extract key points, action items, risks, and suggested Luna skills/workflows.\n${combined}` }]);
-  privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `Summarized attachments via ${ai.mode}.` });
-  const dir = path.join(artifactsRoot(), 'attachments');
-  await ensureDir(dir);
-  const mdPath = path.join(dir, 'attachment_summary.md');
-  const pdfPath = path.join(dir, 'attachment_summary.pdf');
-  const zipPath = path.join(dir, 'attachment_summary_package.zip');
-  await writeText(mdPath, `# Attachment Summary\n\n${ai.text}\n\n## Files\n${state.items.map(i => `- ${i.name} (${i.type}, ${i.chars} chars)`).join('\n')}`);
-  await generatePdf(pdfPath, 'Luna Attachment Summary', [
-    { heading: 'Summary', body: ai.text },
-    { heading: 'Files Used', body: state.items.map(i => `${i.name} — ${i.type} — ${i.chars} chars`).join('\n') },
-    { heading: 'Privacy', body: 'Attachments were copied into Luna local workspace and summarized locally/fallback path. External requests remain tracked in Trust Center.' }
-  ]);
-  await zipFiles(zipPath, [mdPath, pdfPath]);
-  trace.push({ time: now(), title: 'Exported attachment summary', detail: 'Created Markdown, PDF and ZIP summary package.' });
-  await logAudit('artifact', 'attachment_summary', dir, `Summarized ${state.items.length} attachment(s) and exported artifacts.`, 'low');
-  return { summary: 'Attachment summary generated locally.', artifacts: [ { name: 'attachment_summary.md', path: mdPath, type: 'md' }, { name: 'attachment_summary.pdf', path: pdfPath, type: 'pdf' }, { name: 'attachment_summary_package.zip', path: zipPath, type: 'zip' } ], trace, privacy };
-}
+
 
 async function addDocsToVault(files: string[]): Promise<VaultState> {
   const vault = await readVault();
@@ -777,7 +746,8 @@ function defaultSkills(): LunaSkill[] {
     makeSkill('summarize_meeting_transcript', 'Summarize Meeting Transcript', 'Extract decisions and action items from a meeting transcript.', 'meeting', t),
     makeSkill('extract_invoice_data', 'Extract Invoice Data', 'Extract vendor, total, tax, and line items from an invoice document.', 'invoice', t),
     makeSkill('generate_study_pack', 'Generate Study Pack', 'Generate study summaries and flashcards from a document.', 'study', t),
-    makeSkill('explain_codebase_architecture', 'Explain Codebase Architecture', 'Statically analyze a local codebase directory and explain its architecture.', 'research', t)
+    makeSkill('explain_codebase_architecture', 'Explain Codebase Architecture', 'Statically analyze a local codebase directory and explain its architecture.', 'research', t),
+    makeSkill('summarize_my_files', 'Summarize My Files', 'Summarize a local file or folder, extracting key points, action items, risks, and suggested next steps.', 'generic', t)
   ];
 }
 
@@ -864,16 +834,6 @@ async function resolveSkillInput(skill: LunaSkill, context?: any) {
     const entries = fssync.existsSync(folderPath) ? fssync.readdirSync(folderPath).filter(x => !x.startsWith('.')) : [];
     if (entries.length) return { sourceType: 'file' as const, path: path.join(folderPath, entries[0]), name: entries[0] };
   }
-  try {
-    const attachments = await readAttachments().catch(() => ({ items: [] as AttachmentItem[], updatedAt: '' }));
-    const match = attachments.items.find(item => {
-      const accepted = preferred.accept?.map(ext => ext.toLowerCase());
-      if (!accepted?.length) return true;
-      const itemExt = path.extname(item.name).toLowerCase();
-      return accepted.some(ext => ext === itemExt || ext === `.${itemExt}`);
-    });
-    if (match?.storedPath) return { sourceType: 'file' as const, path: match.storedPath, name: match.name };
-  } catch {}
   const fallbackPath = skill.category === 'invoice' ? path.join(docsRoot(), 'Invoice_Demo_Electronics.txt') : skill.category === 'meeting' ? path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt') : skill.category === 'job' ? path.join(docsRoot(), 'Demo_User_Resume.txt') : path.join(docsRoot(), 'Research_Local_AI_Privacy.md');
   return { sourceType: 'file' as const, path: fallbackPath, name: path.basename(fallbackPath) };
 }
@@ -1267,7 +1227,6 @@ async function listSkills(): Promise<LunaSkill[]> {
   await seedMemoryNow();
   await writeText(lensPath(), JSON.stringify([], null, 2));
   await writeText(auditPath(), JSON.stringify([], null, 2));
-  await writeText(attachmentsPath(), JSON.stringify({ items: [], updatedAt: new Date().toISOString() }, null, 2));
   await writeText(settingsPath(), JSON.stringify(defaultSettings(), null, 2));
   return JSON.parse(await readText(skillsPath()));
 }
@@ -1362,7 +1321,6 @@ async function runSkill(skillId: string, inputValues?: Record<string, any>): Pro
   return { skill, artifacts, trace, privacy };
 }
 
-
 async function generateResearchPptx(file: string, title: string, bullets: string[]) {
   await ensureDir(path.dirname(file));
   const pptx = new PptxGenJS();
@@ -1417,25 +1375,15 @@ async function runResearchMission(): Promise<MissionResult> {
     path.join(docsRoot(), 'Portfolio_Notes.md'),
     path.join(docsRoot(), 'Meeting_Transcript_Luna_Demo.txt')
   ];
-  const attachments = await readAttachments().catch(() => ({ items: [] as AttachmentItem[], updatedAt: '' }));
   const combined: string[] = [];
   const sourceNames: string[] = [];
-  if (attachments.items.length) {
-    for (const item of attachments.items.slice(0, 6)) {
-      combined.push(`ATTACHMENT ${item.name}\n${item.textPreview}`);
-      sourceNames.push(item.name);
-      privacy.push({ time: now(), action: 'read_attachment', target: item.storedPath, detail: 'Used imported attachment for research-to-presentation mission.' });
-    }
-    trace.push({ time: now(), title: 'Loaded attachment research sources', detail: `Used ${Math.min(attachments.items.length, 6)} imported attachment(s).` });
-  } else {
-    for (const src of seededSources) {
-      const text = await readText(src);
-      combined.push(`SOURCE ${path.basename(src)}\n${text}`);
-      sourceNames.push(path.basename(src));
-      privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read local source for research-to-presentation mission.' });
-    }
-    trace.push({ time: now(), title: 'Loaded local research sources', detail: `Read ${seededSources.length} documents from the demo workspace.` });
+  for (const src of seededSources) {
+    const text = await readText(src);
+    combined.push(`SOURCE ${path.basename(src)}\n${text}`);
+    sourceNames.push(path.basename(src));
+    privacy.push({ time: now(), action: 'read_file', target: src, detail: 'Read local source for research-to-presentation mission.' });
   }
+  trace.push({ time: now(), title: 'Loaded local research sources', detail: `Read ${seededSources.length} documents from the demo workspace.` });
   const prompt = `Create exactly 10 concise bullet points for a presentation about why Luna's local AI desktop approach is useful and trustworthy. Use this evidence:\n${combined.join('\n\n')}`;
   const ai = await chat([{ role: 'user', content: prompt }]);
   privacy.push({ time: now(), action: 'local_inference', target: ai.model, detail: `Generated research outline via ${ai.mode}.` });
@@ -1826,8 +1774,6 @@ async function undoMission(missionId: string) {
   }
 }
 
-
-
 export type UndoableAction = {
   missionId: string;
   type: 'delete' | 'rename' | 'move' | 'cleanup';
@@ -1878,7 +1824,7 @@ async function undoAllPending(): Promise<{ ok: boolean; undone: number; failed: 
   await logAudit('automation', 'undo_all_pending', manifestsRoot(), `Reversed ${undone} pending action(s), skipped ${failed} unresolvable action(s).`, 'low');
   
   if (failed > 0) {
-    return { ok: true, undone, failed, message: `Restored ${undone} action(s); skipped ${failed} unresolvable action(s) that have been removed from list.` };
+    return { ok: true, undone, failed: 1, message: `Restored ${undone} action(s); skipped ${failed} unresolvable action(s) that have been removed from list.` };
   } else {
     return { ok: true, undone, failed: 0, message: `Restored all ${undone} action(s) successfully.` };
   }
@@ -1960,14 +1906,12 @@ async function explainLens(snapshot: LensSnapshot): Promise<LensSnapshot> {
   return explained;
 }
 
-
-
 async function exportTrustData(): Promise<TrustExportResult> {
   try { getDb().pragma('wal_checkpoint(TRUNCATE)'); } catch {}
   const exportDir = path.join(artifactsRoot(), 'trust_export');
   await ensureDir(exportDir);
   const files = [
-    auditPath(), memoryPath(), vaultPath(), skillsPath(), lensPath(), attachmentsPath(), settingsPath(), databasePath()
+    auditPath(), memoryPath(), vaultPath(), skillsPath(), lensPath(), settingsPath(), databasePath()
   ].filter(f => fssync.existsSync(f));
   const summaryPath = path.join(exportDir, 'trust_summary.json');
   const summary = { exportedAt: new Date().toISOString(), network: networkLog, resources: await getResources(), files: files.map(f => ({ name: path.basename(f), path: f })) };
@@ -1982,9 +1926,6 @@ async function resetAllData() {
   await logAudit('system', 'reset_all_data', demoRoot(), 'All Luna demo data reset/deleted and reseeded.', 'low');
   return result;
 }
-
-
-
 
 const KNOWN_APPS: Record<string, string> = {
   'calculator': 'calc',
@@ -2111,13 +2052,11 @@ async function trySearchFiles(command: string): Promise<CommandRouteResult | nul
 }
 type LastFileAction = { type: 'delete' | 'move' | 'rename'; from: string; to: string; label: string };
 
-// A single candidate match returned to the renderer so it can send back a clarification
 export type RealFileMatch = { path: string; name: string };
-// Pending clarification payload stored in the renderer, forwarded on next submission
 export type PendingClarification = {
   intent: 'delete' | 'rename';
   candidates: RealFileMatch[];
-  newName?: string; // for rename only
+  newName?: string;
 };
 let fileActionHistory: LastFileAction[] = [];
 function lunaTrashDir() { return path.join(app.getPath('userData'), 'luna-trash'); }
@@ -2128,7 +2067,6 @@ async function softTrash(filePath: string): Promise<string> {
   await fs.rename(filePath, dest);
   return dest;
 }
-// ── Direct-execution helpers (used by routeCommandWithContext) ─────────────
 
 async function deleteRealFileToTrash(filePath: string): Promise<CommandRouteResult> {
   try {
@@ -2138,7 +2076,6 @@ async function deleteRealFileToTrash(filePath: string): Promise<CommandRouteResu
     const trashedPath = path.join(lunaTrashFolder(), trashedName);
     await fs.rename(filePath, trashedPath);
 
-    // Write a typed manifest so listUndoableActions + undoMission can handle it
     const manifest = {
       missionId,
       type: 'delete' as const,
@@ -2196,12 +2133,8 @@ async function moveOrRenameRealFile(source: string, destQuery: string, isRename:
   }
 }
 
-// Resolve a clarification reply against a known candidate list.
-// Returns the matched file path, or null if still ambiguous, or undefined if unrelated.
 function resolveAgainstCandidates(reply: string, candidates: RealFileMatch[]): string | null | undefined {
   const r = reply.trim().toLowerCase();
-
-  // Ordinal phrases: "the first one", "first", "1", "the second", "2nd", etc.
   const ordinalWords: Record<string, number> = {
     'first': 0, '1st': 0, '1': 0, 'one': 0,
     'second': 1, '2nd': 1, '2': 1, 'two': 1,
@@ -2215,19 +2148,15 @@ function resolveAgainstCandidates(reply: string, candidates: RealFileMatch[]): s
     }
   }
 
-  // Filename / path fragment match: check if reply contains part of any candidate name
   const hits = candidates.filter(c =>
     r.includes(c.name.toLowerCase()) ||
     r.includes(path.basename(c.path, path.extname(c.path)).toLowerCase())
   );
   if (hits.length === 1) return hits[0].path;
-  if (hits.length > 1) return null; // still ambiguous
+  if (hits.length > 1) return null;
 
-  // No match at all — treat reply as unrelated
   return undefined;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function undoLastFileAction(): Promise<{ ok: boolean; message: string }> {
   const action = fileActionHistory.pop();
@@ -2314,8 +2243,7 @@ async function tryMoveOrRename(command: string): Promise<CommandRouteResult | nu
     const candidates: RealFileMatch[] = topMatches.map(p => ({ path: p, name: path.basename(p) }));
     const pendingClarification: PendingClarification = renameMatch
       ? { intent: 'rename', candidates, newName: destQuery.trim() }
-      : { intent: 'rename', candidates }; // move uses 'rename' intent key but newName carries the dest
-    // For move, store destQuery so we can resume it
+      : { intent: 'rename', candidates };
     if (!renameMatch) pendingClarification.newName = destQuery.trim();
     return {
       intent: renameMatch ? 'file_rename' : 'file_move', confidence: 0.6,
@@ -2360,12 +2288,10 @@ async function routeCommandWithContext(command: string, pending: PendingClarific
 
   const resolved = resolveAgainstCandidates(command, pending.candidates);
 
-  // undefined = unrelated command — fall through to normal routing, clear pending
   if (resolved === undefined) {
     return routeCommand(command);
   }
 
-  // null = still ambiguous after narrowing — ask again with same candidates
   if (resolved === null) {
     const list = pending.candidates.map((c, i) => `${i + 1}. ${c.path}`).join('\n');
     return {
@@ -2377,11 +2303,9 @@ async function routeCommandWithContext(command: string, pending: PendingClarific
     };
   }
 
-  // Resolved to exactly one file — execute the original action
   if (pending.intent === 'delete') {
     return deleteRealFileToTrash(resolved);
   } else {
-    // rename or move — newName carries the destination
     const isMove = !!(pending.newName && Object.keys(KNOWN_FOLDERS).some(k => pending.newName!.toLowerCase().includes(k)));
     return moveOrRenameRealFile(resolved, pending.newName || '', !isMove);
   }
@@ -2418,10 +2342,6 @@ async function routeCommand(command: string): Promise<CommandRouteResult> {
   if (/study|flashcard|quiz/.test(c)) {
     const r = await runSkill('generate_study_pack');
     return { intent: 'generate_study_pack', confidence: 0.86, summary: `Completed skill run: ${r.skill.name}`, actionTaken: `Executed skill: ${r.skill.name}`, artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
-  }
-  if (/attach|attachment|uploaded file|summarize files|summarize attachments/.test(c)) {
-    const r = await summarizeAttachments();
-    return { intent: 'attachment_summary', confidence: 0.87, summary: r.summary, actionTaken: 'Summarized imported attachments', artifacts: r.artifacts, trace: r.trace, privacy: r.privacy };
   }
   if (/job|resume|cover letter|application|interview/.test(c)) {
     const r = await runSkill('analyze_resume_fit');
@@ -2731,8 +2651,6 @@ app.whenReady().then(async () => {
   ipcMain.handle('attachments:import', importAttachments);
   ipcMain.handle('attachments:list', readAttachments);
   ipcMain.handle('attachments:clear', clearAttachments);
-  ipcMain.handle('attachments:to-vault', attachmentsToVault);
-  ipcMain.handle('attachments:summarize', summarizeAttachments);
   ipcMain.handle('settings:get', getSettings);
   ipcMain.handle('settings:save', (_e, settings: Partial<LunaSettings>) => saveSettings(settings));
   ipcMain.handle('database:status', databaseStatus);

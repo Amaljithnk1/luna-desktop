@@ -50,8 +50,6 @@ contextBridge.exposeInMainWorld('luna', {
   attachmentsImport: () => ipcRenderer.invoke('attachments:import'),
   attachmentsList: () => ipcRenderer.invoke('attachments:list'),
   attachmentsClear: () => ipcRenderer.invoke('attachments:clear'),
-  attachmentsToVault: () => ipcRenderer.invoke('attachments:to-vault'),
-  attachmentsSummarize: () => ipcRenderer.invoke('attachments:summarize'),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSave: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),
   databaseStatus: () => ipcRenderer.invoke('database:status'),
