@@ -1788,9 +1788,8 @@ async function undoMission(missionId: string) {
     await logAudit('automation', `undo_${manifest.type}`, manifestPath, `Successfully undid ${manifest.type} action, restored ${restored} files.`, 'low');
     return { ok: true, restored, manifestPath };
   } else {
-    await fs.unlink(manifestPath).catch(() => {});
-    await logAudit('automation', `remove_unresolvable_manifest`, manifestPath, 'Removed unresolvable manifest from undo history.', 'medium');
-    throw new Error('This action cannot be undone (files no longer exist) — manifest has been removed from list.');
+    await logAudit('automation', `undo_${manifest.type}_failed`, manifestPath, `Failed to undo ${manifest.type} action; files do not exist at target paths.`, 'medium');
+    throw new Error('This action cannot be undone (files no longer exist at target paths). The manifest has been preserved in your history.');
   }
 }
 
