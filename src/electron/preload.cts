@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('luna', {
   undoAllPending: () => ipcRenderer.invoke('automation:undo-all'),
   restoreFromTrash: (missionId: string) => ipcRenderer.invoke('automation:restore-from-trash', missionId),
   revealPath: (path: string) => ipcRenderer.invoke('shell:reveal', path),
+  openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
+  openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   getNetworkLog: () => ipcRenderer.invoke('network:log'),
   getResources: () => ipcRenderer.invoke('resources:get'),
   generateSkill: (description: string) => ipcRenderer.invoke('skill:generate', description),

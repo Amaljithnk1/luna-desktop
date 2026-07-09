@@ -906,7 +906,7 @@ const skillToolRegistry: Record<string, (step: LunaSkill['steps'][number], conte
     await ensureDir(path.dirname(filePath));
     await writeText(filePath, content);
     context.artifactPaths.push(filePath);
-    return { path: filePath };
+    return { path: filePath, meta: skill.id === 'summarize_meeting_transcript' ? { subject: `Follow up: ${skill.name}`, body: context.currentText || '' } : undefined };
   },
   async export_pdf(_step, context, skill, skillDir) {
     const filePath = buildSkillArtifactPath(skillDir, `${skill.name}_report`, 'pdf');
@@ -1327,7 +1327,7 @@ async function runSkill(skillId: string, inputValues?: Record<string, any>): Pro
   const skillDir = path.join(artifactsRoot(), 'skills', safeName(skill.name));
   await ensureDir(skillDir);
   const artifacts: Artifact[] = [];
-  const addArtifact = (name: string, p: string, type: Artifact['type']) => artifacts.push({ name, path: p, type });
+  const addArtifact = (name: string, p: string, type: Artifact['type'], meta?: any) => artifacts.push({ name, path: p, type, meta });
 
   if (skill.unsupported) {
     trace.push({ time: now(), title: 'Unsupported skill', detail: skill.unsupportedReason || 'This skill is not executable locally.' });
@@ -1352,7 +1352,7 @@ async function runSkill(skillId: string, inputValues?: Record<string, any>): Pro
       }
       if (result?.path) {
         const artifactName = path.basename(result.path);
-        addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type']);
+        addArtifact(artifactName, result.path, (path.extname(result.path).replace('.', '') || 'md') as Artifact['type'], result.meta);
       }
       if (result?.text) context.currentText = result.text;
       if (result?.json !== undefined) context.currentJson = result.json;
@@ -2660,6 +2660,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:save', (_e, settings: Partial<LunaSettings>) => saveSettings(settings));
   ipcMain.handle('database:status', databaseStatus);
   ipcMain.handle('ui:open-command-palette', () => openMainCommandPalette());
+  ipcMain.handle('shell:open-path', async (_e, path: string) => shell.openPath(path));
+  ipcMain.handle('shell:open-external', async (_e, url: string) => shell.openExternal(url));
   ipcMain.handle('shell:reveal', async (_e, p: string) => {
     if (await exists(p)) {
       shell.showItemInFolder(p);

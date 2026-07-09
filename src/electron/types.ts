@@ -23,7 +23,7 @@ export type ChatResult = {
   finishedAt: number;
 };
 
-export type Artifact = { name: string; path: string; type: 'pdf' | 'docx' | 'md' | 'html' | 'zip' | 'json' | 'csv' | 'ics' };
+export type Artifact = { name: string; path: string; type: 'pdf' | 'docx' | 'md' | 'html' | 'zip' | 'json' | 'csv' | 'ics'; meta?: Record<string, any> };
 export type MissionResult = {
   summary: string;
   artifacts: Artifact[];

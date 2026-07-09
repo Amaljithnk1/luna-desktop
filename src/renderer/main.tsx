@@ -148,7 +148,7 @@ function JudgeShowcase({ pushLog, assistantName }: { pushLog: (s: string)=>void;
     </Card>
     <Card title="Generated Artifacts" icon={<FileText size={18}/>} className="wide">
       {!artifacts.length && <p className="hint">Run the showcase to generate real files.</p>}
-      <div className="artifact-grid">{artifacts.map((a:any, i:number)=><div className="artifact" key={a.path + i}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>
+      <div className="artifact-grid">{artifacts.map((a:any, i:number)=><div className="artifact" key={a.path + i}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button>{a.type === 'ics' && <button type="button" className="secondary" onClick={()=>window.luna.openPath(a.path)}>Add to Calendar</button>}{a.meta?.subject && <button type="button" className="secondary" onClick={()=>window.luna.openExternal(`mailto:?subject=${encodeURIComponent(a.meta.subject)}&body=${encodeURIComponent(a.meta.body || '')}`)}>Open in Email</button>}</div>)}</div>
     </Card>
   </div>;
 }
@@ -417,7 +417,7 @@ function VoiceMode({ pushLog, assistantName }: { pushLog: (s: string)=>void; ass
     </Card>
     <Card title="Voice Action Result" icon={<Activity size={18}/>}> 
       {!result && <p className="hint">Say or type a command, then {assistantName} routes it to skills, vault, Lens, automation or model inspector.</p>}
-      {result && <div className="action-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">confidence {Math.round(result.confidence*100)}%</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
+      {result && <div className="action-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">confidence {Math.round(result.confidence*100)}%</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button>{a.type === 'ics' && <button type="button" className="secondary" onClick={()=>window.luna.openPath(a.path)}>Add to Calendar</button>}{a.meta?.subject && <button type="button" className="secondary" onClick={()=>window.luna.openExternal(`mailto:?subject=${encodeURIComponent(a.meta.subject)}&body=${encodeURIComponent(a.meta.body || '')}`)}>Open in Email</button>}</div>)}</div>}</div>}
     </Card>
   </div>;
 }
@@ -903,7 +903,7 @@ function SkillCreator({ assistantName }: { assistantName: string }) {
     {runResult && <Card title="Skill Run Artifacts" icon={<FileText size={18}/>} className="wide"> 
       <h3>{runResult.skill.name}</h3>
       <div className="artifact-list">
-        {runResult.artifacts.map((a:any) => <div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}
+        {runResult.artifacts.map((a:any) => <div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button>{a.type === 'ics' && <button type="button" className="secondary" onClick={()=>window.luna.openPath(a.path)}>Add to Calendar</button>}{a.meta?.subject && <button type="button" className="secondary" onClick={()=>window.luna.openExternal(`mailto:?subject=${encodeURIComponent(a.meta.subject)}&body=${encodeURIComponent(a.meta.body || '')}`)}>Open in Email</button>}</div>)}
       </div>
       <div className="split-panels">
         <div><h4>Run trace</h4>{runResult.trace.map((t:any,i:number)=><div className="timeline" key={i}><b>{t.time} — {t.title}</b><span>{t.detail}</span></div>)}{!runResult.trace.length && <p className="hint">No run trace events were recorded.</p>}</div>
@@ -1030,7 +1030,7 @@ function CommandPalette({ open, onClose, pushLog, assistantName }: { open: boole
       {pendingClarification && <div className="palette-clarification"><Badge tone="warn">Waiting for clarification</Badge><span>Reply with a number, "the first one", or part of the filename to pick one — or type a new command to cancel.</span></div>}
       <div className="palette-input"><Sparkles size={18}/><input ref={inputRef} value={cmd} onChange={e=>setCmd(e.target.value)} placeholder={pendingClarification ? `Which one? (e.g. "the first one", "the resume one")` : `Tell ${assistantName} what to do…`} onKeyDown={e=>{ if(e.key==='Enter') run(); if(e.key==='Escape') onClose(); }}/><button type="button" onClick={()=>run()} disabled={busy}>{busy?'Running…':'Run'}</button></div>
       <div className="palette-suggestions">{suggestions.map(s=><button type="button" key={s} onClick={()=>{setCmd(s); run(s);}} disabled={busy}>{s}</button>)}</div>
-      {result && <div className="palette-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">{Math.round(result.confidence*100)}% confidence</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button></div>)}</div>}</div>}
+      {result && <div className="palette-result"><div className="route-head"><Badge tone="purple">{result.intent}</Badge><Badge tone="good">{Math.round(result.confidence*100)}% confidence</Badge></div><h3>{result.actionTaken}</h3><p>{result.summary}</p>{result.artifacts?.length>0 && <div className="artifact-list">{result.artifacts.map((a:any)=><div className="artifact" key={a.path}><FileText size={16}/><span>{a.name}</span><button type="button" onClick={()=>window.luna.revealPath(a.path)}>Reveal</button>{a.type === 'ics' && <button type="button" className="secondary" onClick={()=>window.luna.openPath(a.path)}>Add to Calendar</button>}{a.meta?.subject && <button type="button" className="secondary" onClick={()=>window.luna.openExternal(`mailto:?subject=${encodeURIComponent(a.meta.subject)}&body=${encodeURIComponent(a.meta.body || '')}`)}>Open in Email</button>}</div>)}</div>}</div>}
     </div>
   </div>;
 }

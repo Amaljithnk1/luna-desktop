@@ -18,6 +18,8 @@ declare global {
       undoAllPending: () => Promise<{ ok: boolean; undone: number; failed: number; message: string }>;
       restoreFromTrash: (missionId: string) => Promise<any>;
       revealPath: (path: string) => Promise<any>;
+      openPath: (path: string) => Promise<string>;
+      openExternal: (url: string) => Promise<void>;
       getNetworkLog: () => Promise<any>;
       getResources: () => Promise<any>;
       generateSkill: (description: string) => Promise<any>;
